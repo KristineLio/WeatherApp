@@ -1,6 +1,10 @@
 import wx
 import os
 from weather_app.utils.paths import ASSETS_DIR
+from typing import Iterable, Tuple, TypeAlias
+
+Value: TypeAlias = float | int | None
+IconTable: TypeAlias = Iterable[Tuple[float, str]]
 
 # ============================================================================
 # Weather Code Mappings
@@ -96,17 +100,22 @@ def code_to_label_icon(code: int):
     return WEATHERCODE_MAP.get(int(code), ("Weather", "unknown.png"))
 
 
-def _pick_icon_by_threshold(value, table, fallback="unknown.png"):
-    """Pick icon based on value thresholds."""
-    if value is None:
-        return fallback
-    try:
-        v = float(value)
-    except (TypeError, ValueError):
-        return fallback
+def pick_icon_by_threshold(
+        value: Value,
+        table: IconTable,
+        fallback: str = "unknown.png",
+    ) -> str:
+        """Pick icon based on numeric value thresholds."""
+        if value is None:
+            return fallback
 
-    for upper, icon in table:
-        if v < upper:
-            return icon
-    return fallback
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return fallback
 
+        for upper, icon in table:
+            if v < upper:
+                return icon
+
+        return fallback

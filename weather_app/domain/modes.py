@@ -1,25 +1,25 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, TYPE_CHECKING
-from weather_app.utils.icons import _pick_icon_by_threshold, code_to_label_icon
-from weather_app.utils.icons import PRECIP_ICONS, WIND_ICONS, HUMIDITY_ICONS
+from typing import Callable, TYPE_CHECKING, TypeAlias
+
+from weather_app.utils.icons import (
+    pick_icon_by_threshold,
+    code_to_label_icon,
+    PRECIP_ICONS,
+    WIND_ICONS,
+    HUMIDITY_ICONS,
+)
 
 if TYPE_CHECKING:
-    from weather_app.domain.models import HourlySeries, CurrentSnapshot  # only for typing
-"""
-from enum import Enum
-from dataclasses import dataclass
-from typing import Callable, TYPE_CHECKING
-from weather_app.utils.icons import _pick_icon_by_threshold, code_to_label_icon
-from weather_app.domain.models import CurrentSnapshot
-from weather_app.utils.icons import PRECIP_ICONS, WIND_ICONS, HUMIDITY_ICONS
+    from weather_app.domain.models import HourlySeries, CurrentSnapshot
 
-if TYPE_CHECKING:
-    from weather_app.domain.models import HourlySeries  # only for typing
-"""
 
-class HourlyMode(Enum):  #MetricMode
+Value: TypeAlias = float | int | None
+
+
+class HourlyMode(Enum):
     """Weather metric display modes."""
     TEMPERATURE = "temperature"
     PRECIPITATION = "precip"
@@ -30,37 +30,48 @@ class HourlyMode(Enum):  #MetricMode
 @dataclass(frozen=True)
 class ModeMeta:
     """Metadata for a weather metric display mode."""
-    key: str
     tab_label: str
     unit: str
-    fmt: Callable[[float | None], str]                   # value -> string
-    icon: Callable[[float | None, int | None], str]      # (value, code) -> filename
-    values: Callable[["HourlySeries"], list[float | None]]  # HourlySeries -> list of values
-    current_value: Callable[["CurrentSnapshot"], float | None]  # curSnap-> metric value
+    fmt: Callable[[Value], str]                              # value -> string
+    icon: Callable[[Value, int | None], str]                 # (value, code) -> filename
+    values: Callable[["HourlySeries"], list[Value]]          # HourlySeries -> list of values
+    current_value: Callable[["CurrentSnapshot"], Value]      # CurrentSnapshot -> metric value
 
 
-def _fmt_temp(v: float | None) -> str:      return f"{round(v)}°C" if v is not None else "—"
+def _fmt_temp(v: Value) -> str:
+    return f"{round(float(v))}°C" if v is not None else "—"
 
-def _fmt_percent(v: float | None) -> str:   return f"{int(v)}%" if v is not None else "—"
 
-def _fmt_wind(v: float | None) -> str:      return f"{round(v)} km/h" if v is not None else "—"
+def _fmt_percent(v: Value) -> str:
+    return f"{int(v)}%" if v is not None else "—"
 
-def _icon_temp(v: float | None, code: int | None) -> str:   
+
+def _fmt_wind(v: Value) -> str:
+    return f"{round(float(v))} km/h" if v is not None else "—"
+
+
+def _icon_temp(v: Value, code: int | None) -> str:
     return code_to_label_icon(code or 0)[1] if code is not None else "unknown.png"
 
-def _icon_precip(v: float | None, code: int | None) -> str:
-    return _pick_icon_by_threshold(v, PRECIP_ICONS, "precip_unknown.png")
 
-def _icon_wind(v: float | None, code: int | None) -> str:
-    return _pick_icon_by_threshold(v, WIND_ICONS, "wind_unknown.png")
+def _icon_precip(v: Value, code: int | None) -> str:
+    # v may be int|float|None; threshold picker should accept float|None
+    vv = float(v) if v is not None else None
+    return pick_icon_by_threshold(vv, PRECIP_ICONS, "precip_unknown.png")
 
-def _icon_humidity(v: float | None, code: int | None) -> str:
-    return _pick_icon_by_threshold(v, HUMIDITY_ICONS, "hum_unknown.png")
+
+def _icon_wind(v: Value, code: int | None) -> str:
+    vv = float(v) if v is not None else None
+    return pick_icon_by_threshold(vv, WIND_ICONS, "wind_unknown.png")
+
+
+def _icon_humidity(v: Value, code: int | None) -> str:
+    vv = float(v) if v is not None else None
+    return pick_icon_by_threshold(vv, HUMIDITY_ICONS, "hum_unknown.png")
 
 
 MODE_META: dict[HourlyMode, ModeMeta] = {
     HourlyMode.TEMPERATURE: ModeMeta(
-        key="temperature",
         tab_label="Temperature",
         unit="°C",
         fmt=_fmt_temp,
@@ -69,7 +80,6 @@ MODE_META: dict[HourlyMode, ModeMeta] = {
         current_value=lambda cur: cur.temp,
     ),
     HourlyMode.PRECIPITATION: ModeMeta(
-        key="precip",
         tab_label="Precipitation",
         unit="%",
         fmt=_fmt_percent,
@@ -78,7 +88,6 @@ MODE_META: dict[HourlyMode, ModeMeta] = {
         current_value=lambda cur: cur.precip,
     ),
     HourlyMode.WIND: ModeMeta(
-        key="wind",
         tab_label="Wind",
         unit="km/h",
         fmt=_fmt_wind,
@@ -87,7 +96,6 @@ MODE_META: dict[HourlyMode, ModeMeta] = {
         current_value=lambda cur: cur.wind,
     ),
     HourlyMode.HUMIDITY: ModeMeta(
-        key="humidity",
         tab_label="Humidity",
         unit="%",
         fmt=_fmt_percent,
@@ -99,18 +107,14 @@ MODE_META: dict[HourlyMode, ModeMeta] = {
 
 DEFAULT_MODE = HourlyMode.TEMPERATURE
 
+
 def get_mode_meta(mode: HourlyMode) -> ModeMeta:
-    """Get metadata for a given metric mode."""
     return MODE_META.get(mode, MODE_META[DEFAULT_MODE])
 
 
-def format_value(mode: HourlyMode, value: float | None) -> str:
-    """Format a value according to its mode."""
+def format_value(mode: HourlyMode, value: Value) -> str:
     return get_mode_meta(mode).fmt(value)
 
 
-def icon_for(mode: HourlyMode, value: float | None, code: int | None) -> str:
-    """Get icon filename for a value in a given mode."""
+def icon_for(mode: HourlyMode, value: Value, code: int | None) -> str:
     return get_mode_meta(mode).icon(value, code)
-
-

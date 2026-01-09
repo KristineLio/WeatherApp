@@ -1,6 +1,13 @@
+from __future__ import annotations
+
 import wx
+from typing import TypeAlias
+
 from weather_app.utils.icons import get_icon_bitmap
 from weather_app.domain.modes import HourlyMode, icon_for, format_value
+
+# Metric values can be float (temp/wind), int (humidity/precip%), or None.
+Value: TypeAlias = float | int | None
 
 # ============================================================================
 # UI Component
@@ -9,13 +16,20 @@ from weather_app.domain.modes import HourlyMode, icon_for, format_value
 class HourTile(wx.Panel):
     SIZE = (72, 120)
 
-    def __init__(self, parent, time_label: str, mode: HourlyMode, value, code: int | None):
+    def __init__(
+        self,
+        parent: wx.Window,
+        time_label: str,
+        mode: HourlyMode,
+        value: Value,
+        code: int | None,
+    ):
         super().__init__(parent, size=self.SIZE)
         self.SetBackgroundColour(wx.Colour(250, 250, 250))
         self._build_ui()
         self.update_content(time_label=time_label, mode=mode, value=value, code=code)
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         v = wx.BoxSizer(wx.VERTICAL)
 
         self.time_lbl = wx.StaticText(self, label="", style=wx.ALIGN_CENTER)
@@ -34,7 +48,14 @@ class HourTile(wx.Panel):
 
         self.SetSizer(v)
 
-    def update_content(self, *, time_label: str, mode: HourlyMode, value, code: int | None):
+    def update_content(
+        self,
+        *,
+        time_label: str,
+        mode: HourlyMode,
+        value: Value,
+        code: int | None,
+    ) -> None:
         self.time_lbl.SetLabel(time_label)
 
         icon_file = icon_for(mode, value, code)
@@ -42,6 +63,5 @@ class HourTile(wx.Panel):
 
         self.value_lbl.SetLabel(format_value(mode, value))
 
-        # lightweight refresh (no heavy rebuild)
         self.Layout()
         self.Refresh()
