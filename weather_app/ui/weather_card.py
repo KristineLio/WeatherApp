@@ -13,8 +13,8 @@ class WeatherCard(wx.Panel):
         self,
         parent,
         day: str,
-        tmax: float,
-        tmin: float,
+        tmax_text: str,
+        tmin_text: str,
         icon_file: str,
         bg_color: wx.Colour,
         date_iso: str,
@@ -31,7 +31,7 @@ class WeatherCard(wx.Panel):
         self.is_selected = None  # will be set by set_selected()
 
         # --- build UI ---
-        self._build_ui(day, tmax, tmin, icon_file)
+        self._build_ui(day, tmax_text, tmin_text, icon_file)
 
         # --- interactions ---
         self._bind_click_recursive(self)
@@ -39,7 +39,7 @@ class WeatherCard(wx.Panel):
         # --- initial visual state ---
         self.set_selected(is_selected)
 
-    def _build_ui(self, day: str, tmax: float, tmin: float, icon_file: str):
+    def _build_ui(self, day: str, tmax_text: str, tmin_text: str, icon_file: str):
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         # Title (weekday)
@@ -54,11 +54,11 @@ class WeatherCard(wx.Panel):
         self.temps_panel = wx.Panel(self)
         temps_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
-        self.max_text = wx.StaticText(self.temps_panel, label=f"{round(tmax)}°")
+        self.max_text = wx.StaticText(self.temps_panel, label=tmax_text)
         self.max_text.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
         self.max_text.SetForegroundColour(wx.WHITE)
 
-        self.min_text = wx.StaticText(self.temps_panel, label=f"/{round(tmin)}°")
+        self.min_text = wx.StaticText(self.temps_panel, label=f"/{tmin_text}")
         self.min_text.SetFont(wx.Font(12, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
         self.min_text.SetForegroundColour(wx.Colour(220, 230, 255))
 
@@ -75,14 +75,14 @@ class WeatherCard(wx.Panel):
 
         self.SetSizer(vbox)
 
-    def update_content(self, *, day=None, tmax=None, tmin=None, icon_file=None):
+    def update_content(self, *, day=None, tmax_text=None, tmin_text=None, icon_file=None):
         """Optional helper to reuse cards instead of destroying them."""
         if day is not None:
             self.day_text.SetLabel(day)
-        if tmax is not None:
-            self.max_text.SetLabel(f"{round(tmax)}°")
-        if tmin is not None:
-            self.min_text.SetLabel(f"/{round(tmin)}°")
+        if tmax_text is not None:
+            self.max_text.SetLabel(tmax_text)
+        if tmin_text is not None:
+            self.min_text.SetLabel(f"/{tmin_text}")
         if icon_file is not None:
             self.icon.SetBitmap(get_icon_bitmap(icon_file, size=(48, 48)))
         self.Layout()

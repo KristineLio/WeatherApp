@@ -5,6 +5,7 @@ from typing import TypeAlias
 
 from weather_app.utils.icons import get_icon_bitmap
 from weather_app.domain.modes import HourlyMode, icon_for, format_value
+from weather_app.domain.settings import Units 
 
 # Metric values can be float (temp/wind), int (humidity/precip%), or None.
 Value: TypeAlias = float | int | None
@@ -23,11 +24,12 @@ class HourTile(wx.Panel):
         mode: HourlyMode,
         value: Value,
         code: int | None,
+        units: Units
     ):
         super().__init__(parent, size=self.SIZE)
         self.SetBackgroundColour(wx.Colour(250, 250, 250))
         self._build_ui()
-        self.update_content(time_label=time_label, mode=mode, value=value, code=code)
+        self.update_content(time_label=time_label, mode=mode, value=value, code=code, units=units)
 
     def _build_ui(self) -> None:
         v = wx.BoxSizer(wx.VERTICAL)
@@ -55,13 +57,16 @@ class HourTile(wx.Panel):
         mode: HourlyMode,
         value: Value,
         code: int | None,
+        units: Units | None = None,
     ) -> None:
+        if units is None:
+            units = self._units
         self.time_lbl.SetLabel(time_label)
 
         icon_file = icon_for(mode, value, code)
         self.icon.SetBitmap(get_icon_bitmap(icon_file, size=(36, 36)))
 
-        self.value_lbl.SetLabel(format_value(mode, value))
+        self.value_lbl.SetLabel(format_value(mode, value, units))
 
         self.Layout()
         self.Refresh()

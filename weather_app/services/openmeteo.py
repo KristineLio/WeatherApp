@@ -2,6 +2,7 @@ import requests
 import logging
 from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
 from weather_app.utils.formatters import weekday_from_iso
+from weather_app.domain.settings import Units
 
 GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -51,7 +52,7 @@ class WeatherService:
         except Exception:
             return None
 
-    def fetch(self, city: str) -> WeatherData:
+    def fetch(self, city: str, *, units: Units = Units.METRIC) -> WeatherData:
         """
         Fetch weather for a city and return a fully built WeatherData domain object.
         Raises RuntimeError / ValueError with user-friendly messages.
@@ -62,21 +63,26 @@ class WeatherService:
             lat, lon, resolved_name, country = self._geocode_city(city)
             logger.debug("Geocoded city=%r -> lat=%s lon=%s resolved=%r country=%r", city, lat, lon, resolved_name, country)
 
-            forecast = self._get_json(
-                self._forecast_url,
-                params={
-                    "latitude": lat,
-                    "longitude": lon,
-                    "current_weather": True,
-                    "daily": "temperature_2m_max,temperature_2m_min,weathercode",
-                    "hourly": (
-                        "temperature_2m,weathercode,apparent_temperature,windspeed,"
-                        "relativehumidity_2m,precipitation_probability"
-                    ),
-                    "timezone": "auto",
-                },
-                timeout=self._forecast_timeout,
-            )
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "current_weather": True,
+                "daily": "temperature_2m_max,temperature_2m_min,weathercode",
+                "hourly": (
+                    "temperature_2m,weathercode,apparent_temperature,windspeed,"
+                    "relativehumidity_2m,precipitation_probability"
+                ),
+                "timezone": "auto",
+            }
+
+            if units == Units.IMPERIAL:
+                params.update({
+                    "temperature_unit": "fahrenheit",
+                    "wind_speed_unit": "mph",
+                    "precipitation_unit": "inch",
+                })
+
+            forecast = self._get_json(self._forecast_url, params=params, timeout=self._forecast_timeout)
 
             current = forecast.get("current_weather") or {}
             daily = forecast.get("daily") or {}

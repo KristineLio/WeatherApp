@@ -5,31 +5,31 @@ import logging
 import threading
 import datetime as dt
 import wx.lib.scrolledpanel as scrolled
-from typing import Callable, Any, Literal
+
+from weather_app.domain.settings import Settings, Units, Theme
+from weather_app.services.settings_store import SettingsStore
 
 from weather_app.utils.paths import ASSETS_DIR
 from weather_app.utils.icons import get_icon_bitmap, code_to_label_icon
-from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
 from weather_app.utils.formatters import format_full_date
-from weather_app.domain.modes import HourlyMode, DEFAULT_MODE, get_mode_meta
+from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
+from weather_app.domain.modes import HourlyMode, DEFAULT_MODE, get_mode_meta, format_value
 from weather_app.services.openmeteo import WeatherService
 from weather_app.ui.weather_card import WeatherCard 
 from weather_app.ui.hour_tile import HourTile
-from  weather_app.ui.theme import pick_bg
-from weather_app.ui.helpers import set_label_for_value
+from weather_app.ui.theme import pick_bg
 
 
 logger = logging.getLogger(__name__)
 
-def set_current_metric(label: wx.StaticText, mode: HourlyMode, snapshot: "CurrentSnapshot") -> None:
-    """Set label text for a current metric."""
-    meta = get_mode_meta(mode)
-    v = meta.current_value(snapshot)
-    label.SetLabel(f"{meta.tab_label}: {meta.fmt(v)}")
-
 class WeatherApp(wx.Frame):
     def __init__(self, parent, title):
         super().__init__(parent, title=title, size=(420, 700))
+
+        self.settings_store = SettingsStore()
+        self.settings = self.settings_store.load()
+
+        self._user_started_searching = False
 
         self.service = WeatherService()  # networking service
         self.forecast_cards = []
@@ -50,14 +50,43 @@ class WeatherApp(wx.Frame):
     
     def _auto_fetch_on_start(self):
         """
-        Runs once on app start: detect city from IP and trigger initial fetch.
-        Runs in a background thread so the UI doesn't freeze.
+        Startup logic:
+        1) Load last_city immediately (fast)
+        2) Detect city in background and override ONLY if user hasn't interacted
         """
+        # 1) immediate city from settings
+        initial_city = (
+            self.settings.last_city
+            or self.settings.default_city
+            or "Sofia"
+        ).strip()
 
-        city = self.service.detect_city() or "Sofia"
+        def apply_initial():
+            if not self.location.GetValue().strip():
+                self.location.SetValue(initial_city)
+                self._on_get_weather()
 
-        # Update UI + trigger fetch on the main thread
-        wx.CallAfter(lambda: (self.location.SetValue(city), self._on_get_weather()))
+        wx.CallAfter(apply_initial)
+
+        # 2) background IP detection (optional override)
+        detected = self.service.detect_city()
+        if not detected:
+            return
+
+        detected = detected.strip()
+
+        def apply_detected():
+            if self._user_started_searching:
+                return
+            if detected.lower() == initial_city.lower():
+                return
+
+            self.location.SetValue(detected)
+            self.settings.last_city = detected
+            self.settings_store.save(self.settings)
+            self._on_get_weather()
+
+        wx.CallAfter(apply_detected)   
         
     def _init_ui(self):
         """Construct and lay out the full UI for the frame."""
@@ -80,15 +109,24 @@ class WeatherApp(wx.Frame):
         self.SetSizer(main_sizer)
 
     def _apply_theme(self):
-        # Centralize colors so you can tweak the whole app quickly
-        self.COL_BG = wx.Colour(183, 210, 230)
-        self.COL_TOPBAR = wx.Colour(50, 50, 100)
-        self.COL_TOPBAR_INNER = wx.Colour(70, 70, 120)
-        self.COL_CURRENT = wx.Colour(90, 120, 255)
-        self.COL_TEXT_LIGHT = wx.WHITE
+
+        dark = (self.settings.theme.value == "dark")
+
+        if not dark:
+            self.COL_BG = wx.Colour(183, 210, 230)
+            self.COL_TOPBAR = wx.Colour(50, 50, 100)
+            self.COL_TOPBAR_INNER = wx.Colour(70, 70, 120)
+            self.COL_CURRENT = wx.Colour(90, 120, 255)
+            self.COL_TEXT_LIGHT = wx.WHITE
+        else:
+            self.COL_BG = wx.Colour(20, 22, 28)
+            self.COL_TOPBAR = wx.Colour(30, 32, 40)
+            self.COL_TOPBAR_INNER = wx.Colour(45, 48, 60)
+            self.COL_CURRENT = wx.Colour(55, 70, 110)
+            self.COL_TEXT_LIGHT = wx.Colour(240, 240, 240)
 
         self.SetBackgroundColour(self.COL_BG)
-
+       
         # Fonts (centralized)
         self.FONT_LOC = wx.Font(14, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
         self.FONT_NOW = wx.Font(13, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
@@ -176,7 +214,7 @@ class WeatherApp(wx.Frame):
         right_col = wx.BoxSizer(wx.VERTICAL)
 
         # LEFT
-        self.temp_label = wx.StaticText(current_panel, label="-°C")
+        self.temp_label = wx.StaticText(current_panel, label="--")
         self._style_light_label(self.temp_label, self.FONT_TEMP)
 
         self.current_icon = wx.StaticBitmap(
@@ -354,12 +392,16 @@ class WeatherApp(wx.Frame):
         the UI thread. Uses a simple "latest request wins" guard so slower responses
         can't overwrite newer searches.
         """
+        self._user_started_searching = True
         if not self.search_btn.IsEnabled():
             return
         
         city = self.location.GetValue().strip()
         if not city:
             return
+        
+        self.settings.last_city = city
+        self.settings_store.save(self.settings)
 
         req_id = self._next_request_id()
         
@@ -368,7 +410,7 @@ class WeatherApp(wx.Frame):
         def work(local_city: str, local_req_id: int):
             logger.info("Worker start req_id=%s city=%r", local_req_id, local_city)
             try:
-                data = self.service.fetch(local_city)
+                data = self.service.fetch(local_city, units=self.settings.units)
                 logger.info("Worker success req_id=%s city=%r", local_req_id, local_city)
                 self._call_after_if_latest(local_req_id, self.update_ui, data)
             except Exception as e:
@@ -390,6 +432,12 @@ class WeatherApp(wx.Frame):
         self.temp_label.SetLabel("—°C")
         self.desc_label.SetLabel(msg)
     """
+    def _set_current_metric(self, label: wx.StaticText, mode: HourlyMode, snapshot: CurrentSnapshot) -> None:
+        
+        meta = get_mode_meta(mode)
+        v = meta.current_value(snapshot)
+        label.SetLabel(f"{meta.tab_label}: {meta.fmt(v, self.settings.units)}")
+
     def _update_current_block(self, data: WeatherData, *, snapshot: CurrentSnapshot | None = None):
         """
         Update the 'current weather' panel.
@@ -415,20 +463,20 @@ class WeatherApp(wx.Frame):
         else:
             self.now_label.SetLabel("")
 
-        self.temp_label.SetLabel(f"{round(temp)}°C" if temp is not None else "—°C")
+        self.temp_label.SetLabel(format_value(HourlyMode.TEMPERATURE, temp, self.settings.units))
         self.desc_label.SetLabel(label)
         self.city_label.SetLabel(cur.city)
 
         self.current_icon.SetBitmap(get_icon_bitmap(icon_file, size=(60, 60)))
 
         # feels like (keep as-is or also move into MODE_META later)
-        set_label_for_value(self.feels_label, "Feels like : ", cur.feels_like, fmt=lambda v: round(v), suffix="°",)
+        self.feels_label.SetLabel("Feels like " + format_value(HourlyMode.TEMPERATURE, cur.feels_like, self.settings.units))
         
         # right side metrics (mode-driven)
-        set_current_metric(self.precip_label,   HourlyMode.PRECIPITATION, cur)
-        set_current_metric(self.humidity_label, HourlyMode.HUMIDITY, cur)
-        set_current_metric(self.wind_label,     HourlyMode.WIND, cur)
-  
+        self._set_current_metric(self.precip_label,   HourlyMode.PRECIPITATION, cur)
+        self._set_current_metric(self.humidity_label, HourlyMode.HUMIDITY, cur)
+        self._set_current_metric(self.wind_label,     HourlyMode.WIND, cur)
+      
     def _rebuild_forecast_cards(self, daily_list: list[DailyForecast]):
         """Update (reuse) the 7-day forecast card strip.
 
@@ -445,8 +493,8 @@ class WeatherApp(wx.Frame):
             card = WeatherCard(
                 self.forecast_scroll,
                 day="",
-                tmax=0,
-                tmin=0,
+                tmax_text="—",
+                tmin_text="—",
                 icon_file="unknown.png",
                 bg_color=pick_bg(i),
                 date_iso="",
@@ -464,12 +512,11 @@ class WeatherApp(wx.Frame):
             card.on_click = self._on_forecast_card_click
 
             card.base_bg = pick_bg(i)
-            card.update_content(
-                day=d.weekday,
-                tmax=d.tmax,
-                tmin=d.tmin,
-                icon_file=icon_file_d,
-            )
+            max_txt = format_value(HourlyMode.TEMPERATURE, d.tmax, self.settings.units)
+            min_txt = format_value(HourlyMode.TEMPERATURE, d.tmin, self.settings.units)
+
+            card.update_content(day=d.weekday, tmax_text=max_txt, tmin_text=min_txt, icon_file=icon_file_d)
+           
             card.set_selected(d.date_iso == active_date)
 
             if not card.IsShown():
@@ -542,14 +589,26 @@ class WeatherApp(wx.Frame):
 
             # 1) ensure enough tile instances exist (create missing once)
             for i in range(len(self.hour_tiles), needed):
-                tile = HourTile(self.today_scroll, time_label="", mode=DEFAULT_MODE, value=None, code=None)
+                tile = HourTile(
+                    self.today_scroll, 
+                    time_label="", 
+                    mode=DEFAULT_MODE, 
+                    value=None, code=None,
+                    units=self.settings.units,
+                )
                 self.hour_tiles.append(tile)
                 self.today_sizer.Add(tile, 0, wx.ALL, 6)
 
             # 2) update existing tiles
             for i in range(needed):
                 tile = self.hour_tiles[i]
-                tile.update_content(time_label=hours[i], mode=mode, value=values[i], code=codes[i])
+                tile.update_content(
+                    time_label=hours[i],
+                    mode=mode,
+                    value=values[i],
+                    code=codes[i],
+                    units=self.settings.units,
+                )
                 if not tile.IsShown():
                     tile.Show()
 
