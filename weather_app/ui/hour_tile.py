@@ -24,10 +24,16 @@ class HourTile(wx.Panel):
         mode: HourlyMode,
         value: Value,
         code: int | None,
-        units: Units
+        units: Units,
+        bg_color: wx.Colour | None,
+        text_color: wx.Colour,
+        muted_text_color: wx.Colour,
     ):
         super().__init__(parent, size=self.SIZE)
-        self.SetBackgroundColour(wx.Colour(250, 250, 250))
+        self.SetBackgroundColour(bg_color)
+        self._text_color = text_color
+        self._muted_text_color = muted_text_color
+
         self._build_ui()
         self.update_content(time_label=time_label, mode=mode, value=value, code=code, units=units)
 
@@ -36,13 +42,13 @@ class HourTile(wx.Panel):
 
         self.time_lbl = wx.StaticText(self, label="", style=wx.ALIGN_CENTER)
         self.time_lbl.SetFont(wx.Font(10, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        self.time_lbl.SetForegroundColour(wx.Colour(60, 60, 60))
+        self.time_lbl.SetForegroundColour(self._muted_text_color)
 
         self.icon = wx.StaticBitmap(self, bitmap=get_icon_bitmap("unknown.png", size=(36, 36)))
 
         self.value_lbl = wx.StaticText(self, label="", style=wx.ALIGN_CENTER)
         self.value_lbl.SetFont(wx.Font(10, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        self.value_lbl.SetForegroundColour(wx.Colour(60, 60, 60))
+        self.value_lbl.SetForegroundColour(self._text_color)
 
         v.Add(self.time_lbl, 0, wx.ALIGN_CENTER | wx.TOP, 6)
         v.Add(self.icon, 0, wx.ALIGN_CENTER | wx.TOP | wx.BOTTOM, 4)

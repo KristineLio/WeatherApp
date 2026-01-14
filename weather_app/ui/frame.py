@@ -17,7 +17,7 @@ from weather_app.domain.modes import HourlyMode, DEFAULT_MODE, get_mode_meta, fo
 from weather_app.services.openmeteo import WeatherService
 from weather_app.ui.weather_card import WeatherCard 
 from weather_app.ui.hour_tile import HourTile
-from weather_app.ui.theme import pick_bg
+from weather_app.ui.theme import LIGHT, DARK, pick_card_bg
 
 
 logger = logging.getLogger(__name__)
@@ -111,19 +111,15 @@ class WeatherApp(wx.Frame):
     def _apply_theme(self):
 
         dark = (self.settings.theme.value == "dark")
+        #dark = "dark"
+        self.palette = DARK if dark else LIGHT
 
-        if not dark:
-            self.COL_BG = wx.Colour(183, 210, 230)
-            self.COL_TOPBAR = wx.Colour(50, 50, 100)
-            self.COL_TOPBAR_INNER = wx.Colour(70, 70, 120)
-            self.COL_CURRENT = wx.Colour(90, 120, 255)
-            self.COL_TEXT_LIGHT = wx.WHITE
-        else:
-            self.COL_BG = wx.Colour(20, 22, 28)
-            self.COL_TOPBAR = wx.Colour(30, 32, 40)
-            self.COL_TOPBAR_INNER = wx.Colour(45, 48, 60)
-            self.COL_CURRENT = wx.Colour(55, 70, 110)
-            self.COL_TEXT_LIGHT = wx.Colour(240, 240, 240)
+        p = self.palette
+        self.COL_BG = p.bg
+        self.COL_TOPBAR = p.topbar
+        self.COL_TOPBAR_INNER = p.topbar_inner
+        self.COL_CURRENT = p.current
+        self.COL_TEXT_LIGHT = p.text_light
 
         self.SetBackgroundColour(self.COL_BG)
        
@@ -266,7 +262,7 @@ class WeatherApp(wx.Frame):
     
     def _build_forecast_strip(self, parent: wx.Window) -> None:
         self.forecast_scroll = scrolled.ScrolledPanel(parent, size=(-1, 180), style=wx.SUNKEN_BORDER)
-        self.forecast_scroll.SetBackgroundColour(wx.Colour(240, 240, 240))
+        self.forecast_scroll.SetBackgroundColour(self.palette.forecast_strip_bg)
 
         self.forecast_sizer = wx.BoxSizer(wx.HORIZONTAL)
         self.forecast_scroll.SetSizer(self.forecast_sizer)
@@ -293,7 +289,7 @@ class WeatherApp(wx.Frame):
     
     def _build_today_strip(self, parent: wx.Window) -> None:
         self.today_scroll = scrolled.ScrolledPanel(parent, size=(-1, 140), style=wx.SUNKEN_BORDER)
-        self.today_scroll.SetBackgroundColour(wx.Colour(245, 245, 245))
+        self.today_scroll.SetBackgroundColour(self.palette.hourly_strip_bg)
 
         self.today_sizer = wx.BoxSizer(wx.HORIZONTAL)
         self.today_scroll.SetSizer(self.today_sizer)
@@ -414,9 +410,11 @@ class WeatherApp(wx.Frame):
                 logger.info("Worker success req_id=%s city=%r", local_req_id, local_city)
                 self._call_after_if_latest(local_req_id, self.update_ui, data)
             except Exception as e:
-                # Only show error if this is still the latest request
-                logger.exception("Worker error req_id=%s city=%r", local_req_id, local_city)
-                self._call_after_if_latest(local_req_id, self.show_error, str(e))
+                if self._is_latest(local_req_id):
+                    logger.exception("Worker error req_id=%s city=%r", local_req_id, local_city)
+                    self._call_after_if_latest(local_req_id, self.show_error, str(e))
+                else:
+                    logger.info("Worker error (stale) req_id=%s city=%r err=%s", local_req_id, local_city, e)
             finally:
                 # Only the latest request should end loading
                 self._call_after_if_latest(local_req_id, self._set_current_loading, False)
@@ -496,7 +494,8 @@ class WeatherApp(wx.Frame):
                 tmax_text="—",
                 tmin_text="—",
                 icon_file="unknown.png",
-                bg_color=pick_bg(i),
+                bg_color=pick_card_bg(self.palette, i),
+                selected_bg=self.palette.card_selected_bg,
                 date_iso="",
                 on_click=self._on_forecast_card_click,
                 is_selected=False,
@@ -511,7 +510,8 @@ class WeatherApp(wx.Frame):
             card.date_iso = d.date_iso
             card.on_click = self._on_forecast_card_click
 
-            card.base_bg = pick_bg(i)
+            card.base_bg = pick_card_bg(self.palette, i)
+            card.selected_bg = self.palette.card_selected_bg
             max_txt = format_value(HourlyMode.TEMPERATURE, d.tmax, self.settings.units)
             min_txt = format_value(HourlyMode.TEMPERATURE, d.tmin, self.settings.units)
 
@@ -595,6 +595,9 @@ class WeatherApp(wx.Frame):
                     mode=DEFAULT_MODE, 
                     value=None, code=None,
                     units=self.settings.units,
+                    bg_color=self.palette.hour_tile_bg,
+                    text_color=self.palette.hour_tile_text,
+                    muted_text_color=self.palette.hour_tile_text_muted,
                 )
                 self.hour_tiles.append(tile)
                 self.today_sizer.Add(tile, 0, wx.ALL, 6)

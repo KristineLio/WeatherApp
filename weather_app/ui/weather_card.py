@@ -20,6 +20,7 @@ class WeatherCard(wx.Panel):
         date_iso: str,
         on_click,
         is_selected: bool = False,
+        selected_bg: wx.Colour | None = None
     ):
         super().__init__(parent, size=self.SIZE)
 
@@ -27,7 +28,7 @@ class WeatherCard(wx.Panel):
         self.on_click = on_click
 
         self.base_bg = bg_color
-        self.selected_bg = wx.Colour(80, 110, 180)
+        self.selected_bg = selected_bg or wx.Colour(80, 110, 180) 
         self.is_selected = None  # will be set by set_selected()
 
         # --- build UI ---

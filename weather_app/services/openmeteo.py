@@ -131,9 +131,11 @@ class WeatherService:
             )
 
             return wd
-        except Exception:
-            logger.exception("Fetch weather failed city=%r", city)
-            raise    
+        except Exception as e:
+            logger.warning("Fetch weather failed city=%r err=%s", city, e)
+            raise
+
+
     # ---------- internal helpers ----------
 
     def _get_json(self, url: str, *, params: dict | None = None, timeout: int = 10) -> dict:
@@ -145,20 +147,21 @@ class WeatherService:
             return r.json()
 
         except requests.exceptions.Timeout:
-            logger.exception("Timeout calling %s params=%s timeout=%s", url, params, timeout)
+            logger.warning("Timeout calling %s params=%s timeout=%s", url, params, timeout)
             raise RuntimeError("Network timeout while contacting weather service.")
 
         except requests.exceptions.HTTPError as e:
             status = getattr(e.response, "status_code", "unknown")
-            logger.exception("HTTP error calling %s (HTTP %s) params=%s", url, status, params)
+            logger.warning("HTTP error calling %s (HTTP %s) params=%s", url, status, params)
             raise RuntimeError(f"Weather service error (HTTP {status}).")
 
         except ValueError:
-            logger.exception("Invalid JSON from %s params=%s", url, params)
+            logger.warning("Invalid JSON from %s params=%s", url, params)
             raise RuntimeError("Weather service returned invalid JSON.")
 
-        except requests.RequestException:
-            logger.exception("Request error calling %s params=%s", url, params)
+        except requests.RequestException as e:
+            # includes DNS failures like getaddrinfo
+            logger.warning("Request error calling %s params=%s err=%s", url, params, e)
             raise RuntimeError("Network error while contacting weather service.")
 
     def _geocode_city(self, city: str) -> tuple[float, float, str, str]:
