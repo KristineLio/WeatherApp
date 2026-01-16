@@ -1,4 +1,5 @@
 import wx
+
 from weather_app.utils.icons import get_icon_bitmap
 
 # ============================================================================
@@ -114,5 +115,15 @@ class WeatherCard(wx.Panel):
             if isinstance(child, wx.Panel):
                 child.SetBackgroundColour(bg)
 
+        self.Refresh()
+    
+    def refresh_theme(self) -> None:
+        """Re-apply background based on current selection/base colors."""
+        bg = self.selected_bg if self.is_selected else self.base_bg
+        self.SetBackgroundColour(bg)
+        self.temps_panel.SetBackgroundColour(bg)
+        for child in self.GetChildren():
+            if isinstance(child, wx.Panel):
+                child.SetBackgroundColour(bg)
         self.Refresh()
 

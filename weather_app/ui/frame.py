@@ -6,18 +6,22 @@ import threading
 import datetime as dt
 import wx.lib.scrolledpanel as scrolled
 
-from weather_app.domain.settings import Settings, Units, Theme
+from weather_app.services.openmeteo import WeatherService
 from weather_app.services.settings_store import SettingsStore
 
 from weather_app.utils.paths import ASSETS_DIR
 from weather_app.utils.icons import get_icon_bitmap, code_to_label_icon
 from weather_app.utils.formatters import format_full_date
+
 from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
 from weather_app.domain.modes import HourlyMode, DEFAULT_MODE, get_mode_meta, format_value
-from weather_app.services.openmeteo import WeatherService
+
 from weather_app.ui.weather_card import WeatherCard 
 from weather_app.ui.hour_tile import HourTile
-from weather_app.ui.theme import LIGHT, DARK, pick_card_bg
+from weather_app.ui.theme import LIGHT, DARK, pick_card_bg, get_palette
+
+from weather_app.ui.settings_dialog import SettingsDialog
+
 
 
 logger = logging.getLogger(__name__)
@@ -48,6 +52,91 @@ class WeatherApp(wx.Frame):
         # Start a background task to auto-detect location and fetch weather
         threading.Thread(target=self._auto_fetch_on_start, daemon=True).start()
     
+    
+    def _prompt_use_detected_city(self, detected: str) -> None:
+        # Don’t prompt if user already interacted
+        if self._user_started_searching:
+            return
+        
+        if not self.settings.ask_detected_on_start:
+            return
+
+        msg = (
+            f"See results closer to you?\n\n"
+            f"Use detected city: {detected}\n"
+        )
+
+        # RichMessageDialog supports a checkbox on Windows
+        dlg = wx.RichMessageDialog(
+            self,
+            msg,
+            "Use detected location?",
+            style=wx.YES_NO | wx.CANCEL | wx.ICON_QUESTION,
+        )
+        dlg.ShowCheckBox("Don't ask again", checked=True)
+
+        try:
+            res = dlg.ShowModal()
+            dont_ask_again = dlg.IsCheckBoxChecked()
+        finally:
+            dlg.Destroy()
+
+        if dont_ask_again:
+            self.settings.location_prompted = True
+
+        if res == wx.ID_YES:
+            self.settings.use_detected_on_start = True
+            self.location.SetValue(detected)
+            self.settings.last_city = detected
+            self.settings_store.save(self.settings)
+            self._on_get_weather(mark_user=False)
+            return
+
+        if res == wx.ID_NO:
+            self.settings.use_detected_on_start = False
+            self.settings_store.save(self.settings)
+            return
+
+        # Cancel , still remember "don't ask again" if checked
+        self.settings_store.save(self.settings)
+    
+    def _log_location_prompt_decision(self,*,detected: str,initial_city: str,) -> None:
+        """
+        Debug helper: explain why the detected-location prompt
+        will or will not be shown.
+        """
+        if self._user_started_searching:
+            logger.debug(
+                "Location prompt skipped: user already started searching"
+            )
+            return
+
+        if detected.lower() == initial_city.lower():
+            logger.debug(
+                "Location prompt skipped: detected city matches initial city (%s)",
+                detected,
+            )
+            return
+
+        if self.settings.use_detected_on_start:
+            logger.debug(
+                "Location prompt skipped: user opted in to use detected city automatically"
+            )
+            return
+
+        if self.settings.location_prompted:
+            logger.debug(
+                "Location prompt skipped: user was already prompted before"
+            )
+            return
+
+        logger.debug(
+            "Location prompt WILL be shown (detected=%s, initial=%s)",
+            detected,
+            initial_city,
+        )
+
+
     def _auto_fetch_on_start(self):
         """
         Startup logic:
@@ -64,7 +153,7 @@ class WeatherApp(wx.Frame):
         def apply_initial():
             if not self.location.GetValue().strip():
                 self.location.SetValue(initial_city)
-                self._on_get_weather()
+                self._on_get_weather(mark_user=False)
 
         wx.CallAfter(apply_initial)
 
@@ -76,17 +165,45 @@ class WeatherApp(wx.Frame):
         detected = detected.strip()
 
         def apply_detected():
+            logger.debug(
+                "Location prompt decision: user_started=%s prompted=%s use_detected=%s detected=%s initial=%s",
+                self._user_started_searching,
+                self.settings.location_prompted,
+                self.settings.use_detected_on_start,
+                detected,
+                initial_city,
+            )
+
+            # If user touched anything, never override / prompt
             if self._user_started_searching:
                 return
+            
+            # If same city, nothing to do
             if detected.lower() == initial_city.lower():
                 return
 
-            self.location.SetValue(detected)
-            self.settings.last_city = detected
-            self.settings_store.save(self.settings)
-            self._on_get_weather()
+            # 1) if user already opted-in, use detected silently
+            if self.settings.use_detected_on_start:
+                self.location.SetValue(detected)
+                self.settings.last_city = detected
+                self.settings_store.save(self.settings)
+                self._on_get_weather(mark_user=False)
+                return
+            
+            # 2) If user disabled asking entirely, do nothing
+            if not self.settings.ask_detected_on_start:
+                return
+
+            # 3) Ask (only if not previously "don't ask again")
+            if not self.settings.location_prompted:
+                self._prompt_use_detected_city(detected)
+                return
+
+            # 4) Otherwise do nothing
+            return
 
         wx.CallAfter(apply_detected)   
+
         
     def _init_ui(self):
         """Construct and lay out the full UI for the frame."""
@@ -98,6 +215,7 @@ class WeatherApp(wx.Frame):
         current_panel = self._build_current_panel(self)
         self._build_forecast_strip(self)
         tabs_panel = self._build_hourly_tabs(self)
+        self.tabs_panel = tabs_panel
         self._build_today_strip(self)
 
         main_sizer.Add(top_bar,        0, wx.EXPAND)
@@ -112,7 +230,7 @@ class WeatherApp(wx.Frame):
 
         dark = (self.settings.theme.value == "dark")
         #dark = "dark"
-        self.palette = DARK if dark else LIGHT
+        self.palette = get_palette(self.settings.theme)
 
         p = self.palette
         self.COL_BG = p.bg
@@ -164,6 +282,7 @@ class WeatherApp(wx.Frame):
         
     def _build_top_bar(self, parent: wx.Window) -> wx.Panel:
         top_bar = wx.Panel(parent, size=(-1, 50))
+        self.top_bar = top_bar  # keep reference for theme refresh
         top_bar.SetBackgroundColour(self.COL_TOPBAR)
 
         s = wx.BoxSizer(wx.HORIZONTAL)
@@ -184,15 +303,118 @@ class WeatherApp(wx.Frame):
         self.search_btn.SetBackgroundColour(self.COL_TOPBAR)
         self.search_btn.Bind(wx.EVT_BUTTON, self._on_get_weather)
 
+        # settings button (uses built-in art, no asset needed)
+        gear_bmp = wx.ArtProvider.GetBitmap(wx.ART_HELP_SETTINGS, wx.ART_BUTTON, (24, 24))
+        self.settings_btn = wx.BitmapButton(top_bar, bitmap=gear_bmp, style=wx.NO_BORDER)
+        self.settings_btn.SetBackgroundColour(self.COL_TOPBAR)
+        self.settings_btn.SetToolTip("Settings")
+        self.settings_btn.Bind(wx.EVT_BUTTON, self._on_open_settings)
+
         s.Add(self.location, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
         s.Add(self.search_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
+        s.Add(self.settings_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
 
         top_bar.SetSizer(s)
         return top_bar
+    
+    def _on_open_settings(self, event: wx.CommandEvent) -> None:
+        dlg = SettingsDialog(self, self.settings)
+        try:
+            res = dlg.ShowModal()
+            if res != wx.ID_OK:
+                return
+
+            new_settings = dlg.get_settings()
+
+            theme_changed = new_settings.theme != self.settings.theme
+            units_changed = new_settings.units != self.settings.units
+            default_changed = new_settings.default_city != self.settings.default_city
+
+            # commit + persist
+            self.settings = new_settings
+            self.settings_store.save(self.settings)
+
+            # If theme changed: apply palette + repaint existing controls
+            if theme_changed:
+                self._apply_theme()
+                self._apply_theme_to_existing_ui()
+
+            # If units changed: easiest + correct = refetch with new params
+            # (your WeatherService already supports imperial params) :contentReference[oaicite:5]{index=5}
+            if units_changed and self.location.GetValue().strip():
+                self._on_get_weather()
+
+            # Optional: if user changed default city and textbox is empty, fill it
+            if default_changed and not self.location.GetValue().strip():
+                self.location.SetValue(self.settings.default_city)
+
+        finally:
+            dlg.Destroy()
+
+
+    def _apply_theme_to_existing_ui(self) -> None:
+        """
+        Called after self._apply_theme() to recolor already-created widgets.
+        Keeps it minimal and safe.
+        """
+        p = self.palette
+
+        # frame bg
+        self.SetBackgroundColour(self.COL_BG)
+
+        # top bar
+        if hasattr(self, "top_bar"):
+            self.top_bar.SetBackgroundColour(self.COL_TOPBAR)
+
+        if hasattr(self, "location"):
+            self.location.SetForegroundColour(self.COL_TEXT_LIGHT)
+            self.location.SetBackgroundColour(self.COL_TOPBAR_INNER)
+
+        if hasattr(self, "search_btn"):
+            self.search_btn.SetBackgroundColour(self.COL_TOPBAR)
+
+        if hasattr(self, "settings_btn"):
+            self.settings_btn.SetBackgroundColour(self.COL_TOPBAR)
+        
+        # current panel
+        if hasattr(self, "current_panel"):
+            self.current_panel.SetBackgroundColour(self.COL_CURRENT)
+            self.current_panel.Refresh()
+
+        # strips
+        if hasattr(self, "forecast_scroll"):
+            self.forecast_scroll.SetBackgroundColour(p.forecast_strip_bg)
+        if hasattr(self, "today_scroll"):
+            self.today_scroll.SetBackgroundColour(p.hourly_strip_bg)
+
+        # forecast cards: update palette-based bg + selected bg
+        if hasattr(self, "forecast_cards"):
+            for i, card in enumerate(self.forecast_cards):
+                card.base_bg = pick_card_bg(p, i)
+                card.selected_bg = p.card_selected_bg
+                # keep selection state
+                is_sel = (getattr(card, "date_iso", None) == getattr(self, "selected_date", None))
+                card.set_selected(bool(is_sel))
+                card.refresh_theme()
+
+        # hour tiles: recolor backgrounds + text
+        if hasattr(self, "hour_tiles"):
+            for t in self.hour_tiles:
+                try:
+                    t.SetBackgroundColour(p.hour_tile_bg)
+                    # HourTile has these labels in your file :contentReference[oaicite:6]{index=6}
+                    t.time_lbl.SetForegroundColour(p.hour_tile_text_muted)
+                    t.value_lbl.SetForegroundColour(p.hour_tile_text)
+                    t.Refresh()
+                except Exception:
+                    pass
+
+        self.Layout()
+        self.Refresh()
 
     def _build_current_panel(self, parent: wx.Window) -> wx.Panel:
         current_panel = wx.Panel(parent, size=(-1, 220))
-
+        self.current_panel = current_panel
         current_panel.SetBackgroundColour(self.COL_CURRENT)
 
         cp = wx.BoxSizer(wx.VERTICAL)
@@ -348,7 +570,7 @@ class WeatherApp(wx.Frame):
             for b in getattr(self, "mode_buttons", {}).values():
                 b.Enable()
 
-            # Keep UI consistent: re-assert the active toggle (optional but nice)
+            # Keep UI consistent: re-assert the active toggle
             if hasattr(self, "hourly_mode"):
                 self._set_hourly_mode(self.hourly_mode, refresh=False)
 
@@ -358,6 +580,9 @@ class WeatherApp(wx.Frame):
             self.current_panel.Refresh()
         else:
             self.Refresh()
+        
+        if hasattr(self, "tabs_panel"):
+            self.tabs_panel.Disable() if is_loading else self.tabs_panel.Enable()
 
 
     def _next_request_id(self) -> int:
@@ -381,14 +606,16 @@ class WeatherApp(wx.Frame):
             pass
 
 
-    def _on_get_weather(self, event=None):
+    def _on_get_weather(self, event=None, *, mark_user: bool = True):
         """Fetch weather for the city in the search box.
 
         Runs the network request in a background thread and applies results back on
         the UI thread. Uses a simple "latest request wins" guard so slower responses
         can't overwrite newer searches.
         """
-        self._user_started_searching = True
+        if mark_user:
+            self._user_started_searching = True
+        
         if not self.search_btn.IsEnabled():
             return
         

@@ -21,6 +21,10 @@ class Settings:
     units: Units = Units.METRIC
     theme: Theme = Theme.LIGHT
 
+    location_prompted: bool = False
+    use_detected_on_start: bool = False
+    ask_detected_on_start: bool = True
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["units"] = self.units.value
@@ -37,4 +41,7 @@ class Settings:
             last_city=str(data.get("last_city") or data.get("default_city") or "Sofia"),
             units=Units(str(data.get("units") or Units.METRIC.value)),
             theme=Theme(str(data.get("theme") or Theme.LIGHT.value)),
+            location_prompted=bool(data.get("location_prompted", False)),
+            use_detected_on_start=bool(data.get("use_detected_on_start", False)),
+            ask_detected_on_start=bool(data.get("ask_detected_on_start", True)),
         )
