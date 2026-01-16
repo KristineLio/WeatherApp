@@ -41,6 +41,10 @@ class SettingsDialog(wx.Dialog):
         self.theme = wx.Choice(self, choices=["Light", "Dark"])
         self.theme.SetSelection(0 if settings.theme == Theme.LIGHT else 1)
 
+        self.lbl_forecast_days = wx.StaticText(self, label="Forecast days:")
+        self.forecast_days = wx.SpinCtrl(self, min=3, max=14, initial=getattr(settings, "forecast_days", 7))
+
+
         self.chk_use_detected = wx.CheckBox(self, label="Use detected city on startup")
         self.chk_use_detected.SetValue(bool(settings.use_detected_on_start))
 
@@ -63,6 +67,9 @@ class SettingsDialog(wx.Dialog):
 
         form.Add(self.lbl_theme, 0, wx.ALIGN_CENTER_VERTICAL)
         form.Add(self.theme, 1, wx.EXPAND)
+
+        form.Add(self.lbl_forecast_days, 0, wx.ALIGN_CENTER_VERTICAL)
+        form.Add(self.forecast_days, 1, wx.EXPAND)
 
         root.Add(form, 1, wx.EXPAND | wx.ALL, 14)
         root.Add(self.chk_use_detected, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 14)
@@ -106,6 +113,7 @@ class SettingsDialog(wx.Dialog):
         self.default_city.SetValue(Settings().default_city)
         self.units.SetSelection(0)  # Metric
         self.theme.SetSelection(0)  # Light
+        self.forecast_days.SetValue(Settings().forecast_days)
 
         # Update dialog theme immediately to match selection
         self.palette = get_palette(Theme.LIGHT)
@@ -133,6 +141,10 @@ class SettingsDialog(wx.Dialog):
         for ctrl in (self.default_city, self.units, self.theme):
             ctrl.SetBackgroundColour(p.input_bg)
             ctrl.SetForegroundColour(p.input_text)
+
+        self.lbl_forecast_days.SetForegroundColour(p.text_primary)
+        self.forecast_days.SetForegroundColour(p.input_text)
+        self.forecast_days.SetBackgroundColour(p.input_bg)
         
         for cb in (self.chk_use_detected, self.chk_ask_detected):
             cb.SetForegroundColour(p.text_primary)
@@ -147,6 +159,8 @@ class SettingsDialog(wx.Dialog):
 
         units = Units.METRIC if self.units.GetSelection() == 0 else Units.IMPERIAL
         theme = Theme.LIGHT if self.theme.GetSelection() == 0 else Theme.DARK
+
+        forecast_days = int(self.forecast_days.GetValue())
 
         use_detected = bool(self.chk_use_detected.GetValue())
         ask_detected = bool(self.chk_ask_detected.GetValue()) and (not use_detected)
@@ -163,6 +177,7 @@ class SettingsDialog(wx.Dialog):
             last_city=self._original.last_city,
             units=units,
             theme=theme,
+            forecast_days=forecast_days,
             location_prompted=location_prompted,
             use_detected_on_start=use_detected,
             ask_detected_on_start=ask_detected,

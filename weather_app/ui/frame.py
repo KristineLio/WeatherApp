@@ -100,43 +100,6 @@ class WeatherApp(wx.Frame):
         # Cancel , still remember "don't ask again" if checked
         self.settings_store.save(self.settings)
     
-    def _log_location_prompt_decision(self,*,detected: str,initial_city: str,) -> None:
-        """
-        Debug helper: explain why the detected-location prompt
-        will or will not be shown.
-        """
-        if self._user_started_searching:
-            logger.debug(
-                "Location prompt skipped: user already started searching"
-            )
-            return
-
-        if detected.lower() == initial_city.lower():
-            logger.debug(
-                "Location prompt skipped: detected city matches initial city (%s)",
-                detected,
-            )
-            return
-
-        if self.settings.use_detected_on_start:
-            logger.debug(
-                "Location prompt skipped: user opted in to use detected city automatically"
-            )
-            return
-
-        if self.settings.location_prompted:
-            logger.debug(
-                "Location prompt skipped: user was already prompted before"
-            )
-            return
-
-        logger.debug(
-            "Location prompt WILL be shown (detected=%s, initial=%s)",
-            detected,
-            initial_city,
-        )
-
-
     def _auto_fetch_on_start(self):
         """
         Startup logic:
@@ -203,6 +166,27 @@ class WeatherApp(wx.Frame):
             return
 
         wx.CallAfter(apply_detected)   
+    
+    def _schedule_refetch(self, city: str, *, failed_req_id: int, delay_ms: int = 20000) -> None:
+        """Retry once after a delay, but only if still relevant. (UI thread only)"""
+        def retry():
+            # still the latest request?
+            if not self._is_latest(failed_req_id):
+                return
+
+            # city unchanged?
+            current_city = self.location.GetValue().strip()
+            if current_city.lower() != city.strip().lower():
+                return
+
+            # not already loading?
+            if not self.search_btn.IsEnabled():
+                return
+
+            logger.info("Auto-refetch retry req_id=%s city=%r", failed_req_id, city)
+            self._on_get_weather(mark_user=False)
+
+        wx.CallLater(delay_ms, retry)
 
         
     def _init_ui(self):
@@ -326,32 +310,45 @@ class WeatherApp(wx.Frame):
 
             new_settings = dlg.get_settings()
 
-            theme_changed = new_settings.theme != self.settings.theme
-            units_changed = new_settings.units != self.settings.units
-            default_changed = new_settings.default_city != self.settings.default_city
+            # capture old values BEFORE overwrite
+            old_settings = self.settings
+            old_forecast = getattr(old_settings, "forecast_days", 7)
+
+            theme_changed = new_settings.theme != old_settings.theme
+            units_changed = new_settings.units != old_settings.units
+            forecast_changed = getattr(new_settings, "forecast_days", 7) != old_forecast
+            default_changed = new_settings.default_city != old_settings.default_city
 
             # commit + persist
             self.settings = new_settings
             self.settings_store.save(self.settings)
 
-            # If theme changed: apply palette + repaint existing controls
             if theme_changed:
                 self._apply_theme()
                 self._apply_theme_to_existing_ui()
 
-            # If units changed: easiest + correct = refetch with new params
-            # (your WeatherService already supports imperial params) :contentReference[oaicite:5]{index=5}
+            # If units changed: refetch
             if units_changed and self.location.GetValue().strip():
-                self._on_get_weather()
+                self._on_get_weather()  # user initiated is fine here
+                return  # optional: avoid double work
 
-            # Optional: if user changed default city and textbox is empty, fill it
+            # Forecast days changed:
+            if forecast_changed and self.location.GetValue().strip():
+                # If increased -> need more data, so refetch
+                if self.settings.forecast_days > old_forecast:
+                    self._on_get_weather(mark_user=False)  # no need to mark as user typing
+                else:
+                    # If decreased -> existing data is enough, just rebuild
+                    if self.data:
+                        self._rebuild_forecast_cards(self.data.daily)
+            logger.info("Settings changed: forecast_days %s -> %s", old_forecast, self.settings.forecast_days)
+
             if default_changed and not self.location.GetValue().strip():
                 self.location.SetValue(self.settings.default_city)
 
         finally:
             dlg.Destroy()
-
-
+            
     def _apply_theme_to_existing_ui(self) -> None:
         """
         Called after self._apply_theme() to recolor already-created widgets.
@@ -445,6 +442,12 @@ class WeatherApp(wx.Frame):
         # RIGHT
         self.desc_label = wx.StaticText(current_panel, label=" ", style=wx.ALIGN_CENTER)
         self._style_light_label(self.desc_label, self.FONT_DESC)
+
+        # reconnect / status (hidden by default)
+        self.status_label = wx.StaticText(panel, label="")
+        self.status_label.SetFont(self.theme.font_sm)
+        self.status_label.SetForegroundColour(wx.Colour(150, 150, 150))
+        self.status_label.Hide()
 
         self.precip_label   = self._build_metric_label(current_panel, "Precip: —")
         self.humidity_label = self._build_metric_label(current_panel, "Humidity: —")
@@ -633,15 +636,24 @@ class WeatherApp(wx.Frame):
         def work(local_city: str, local_req_id: int):
             logger.info("Worker start req_id=%s city=%r", local_req_id, local_city)
             try:
-                data = self.service.fetch(local_city, units=self.settings.units)
+                data = self.service.fetch(local_city,
+                                          units=self.settings.units,
+                                          forecast_days=self.settings.forecast_days,)
                 logger.info("Worker success req_id=%s city=%r", local_req_id, local_city)
                 self._call_after_if_latest(local_req_id, self.update_ui, data)
             except Exception as e:
-                if self._is_latest(local_req_id):
-                    logger.exception("Worker error req_id=%s city=%r", local_req_id, local_city)
-                    self._call_after_if_latest(local_req_id, self.show_error, str(e))
+                # schedule retry only for network errors
+                if isinstance(e, RuntimeError) and "Network" in str(e):
+                    logger.info("Scheduling auto-refetch due to network error city=%r", local_city)
+                    self._call_after_if_latest(local_req_id, self._schedule_refetch, local_city, failed_req_id=local_req_id,)
+
+                # log: full traceback only for unexpected errors
+                if isinstance(e, RuntimeError):
+                    logger.error("Worker error req_id=%s city=%r err=%s", local_req_id, local_city, e)
                 else:
-                    logger.info("Worker error (stale) req_id=%s city=%r err=%s", local_req_id, local_city, e)
+                    logger.exception("Worker error req_id=%s city=%r", local_req_id, local_city)
+
+                self._call_after_if_latest(local_req_id, self.show_error, str(e))
             finally:
                 # Only the latest request should end loading
                 self._call_after_if_latest(local_req_id, self._set_current_loading, False)
@@ -708,7 +720,8 @@ class WeatherApp(wx.Frame):
         Reuses existing WeatherCard instances when possible, hides any extras,
         and keeps the visual selected state in sync with self.selected_date.
         """
-        days = (daily_list or [])[:7]
+        n = int(getattr(self.settings, "forecast_days", 7))
+        days = (daily_list or [])[:n]
 
         today_iso = self.data.current.date_iso if self.data else None
         active_date = self.selected_date or today_iso # <-- keep user selection if it exists

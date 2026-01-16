@@ -52,7 +52,7 @@ class WeatherService:
         except Exception:
             return None
 
-    def fetch(self, city: str, *, units: Units = Units.METRIC) -> WeatherData:
+    def fetch(self, city: str, *, units: Units = Units.METRIC, forecast_days: int = 7,) -> WeatherData:
         """
         Fetch weather for a city and return a fully built WeatherData domain object.
         Raises RuntimeError / ValueError with user-friendly messages.
@@ -73,6 +73,7 @@ class WeatherService:
                     "relativehumidity_2m,precipitation_probability"
                 ),
                 "timezone": "auto",
+                "forecast_days": int(forecast_days),
             }
 
             if units == Units.IMPERIAL:
@@ -94,6 +95,7 @@ class WeatherService:
                 raise RuntimeError("Unexpected API response: missing daily/hourly time arrays.")
 
             days = self._parse_daily(daily)
+            logger.info("Daily forecast points received: %s", len(days))
 
             current_time_iso = current.get("time")
             current_date_iso = current_time_iso.split("T")[0] if current_time_iso else None
@@ -146,23 +148,23 @@ class WeatherService:
             r.raise_for_status()
             return r.json()
 
-        except requests.exceptions.Timeout:
+        except requests.exceptions.Timeout as e:
             logger.warning("Timeout calling %s params=%s timeout=%s", url, params, timeout)
-            raise RuntimeError("Network timeout while contacting weather service.")
+            raise RuntimeError("Network timeout while contacting weather service.") from e
 
         except requests.exceptions.HTTPError as e:
             status = getattr(e.response, "status_code", "unknown")
             logger.warning("HTTP error calling %s (HTTP %s) params=%s", url, status, params)
-            raise RuntimeError(f"Weather service error (HTTP {status}).")
+            raise RuntimeError(f"Weather service error (HTTP {status}).") from e
 
-        except ValueError:
-            logger.warning("Invalid JSON from %s params=%s", url, params)
-            raise RuntimeError("Weather service returned invalid JSON.")
+        except ValueError as e:
+            logger.warning("Invalid JSON from %s params=%s err=%s", url, params, e)
+            raise RuntimeError("Weather service returned invalid JSON.") from e
 
         except requests.RequestException as e:
-            # includes DNS failures like getaddrinfo
+            # includes DNS failures like getaddrinfo and connection resets
             logger.warning("Request error calling %s params=%s err=%s", url, params, e)
-            raise RuntimeError("Network error while contacting weather service.")
+            raise RuntimeError("Network error while contacting weather service.") from e
 
     def _geocode_city(self, city: str) -> tuple[float, float, str, str]:
         """Return (lat, lon, resolved_name, country). Raise ValueError if not found."""
