@@ -169,20 +169,31 @@ class WeatherApp(wx.Frame):
     
     def _schedule_refetch(self, city: str, *, failed_req_id: int, delay_ms: int = 20000) -> None:
         """Retry once after a delay, but only if still relevant. (UI thread only)"""
+        seconds = delay_ms // 1000
+
+        # start countdown immediately
+        self._start_reconnect_countdown(
+            failed_req_id=failed_req_id,
+            seconds=seconds,
+        )
+
         def retry():
             # still the latest request?
             if not self._is_latest(failed_req_id):
+                self._hide_reconnect_status()
                 return
 
             # city unchanged?
             current_city = self.location.GetValue().strip()
             if current_city.lower() != city.strip().lower():
+                self._hide_reconnect_status()
                 return
 
             # not already loading?
             if not self.search_btn.IsEnabled():
                 return
-
+            
+            self._hide_reconnect_status()
             logger.info("Auto-refetch retry req_id=%s city=%r", failed_req_id, city)
             self._on_get_weather(mark_user=False)
 
@@ -444,9 +455,17 @@ class WeatherApp(wx.Frame):
         self._style_light_label(self.desc_label, self.FONT_DESC)
 
         # reconnect / status (hidden by default)
-        self.status_label = wx.StaticText(panel, label="")
-        self.status_label.SetFont(self.theme.font_sm)
+        self.status_label = wx.StaticText(current_panel, label="")
         self.status_label.SetForegroundColour(wx.Colour(150, 150, 150))
+
+        base_font = self.desc_label.GetFont()
+        small_font = wx.Font(
+            base_font.GetPointSize() - 1,
+            base_font.GetFamily(),
+            base_font.GetStyle(),
+            base_font.GetWeight(),
+        )
+        self.status_label.SetFont(small_font)
         self.status_label.Hide()
 
         self.precip_label   = self._build_metric_label(current_panel, "Precip: —")
@@ -456,6 +475,7 @@ class WeatherApp(wx.Frame):
         
 
         right_col.Add(self.desc_label, 0, wx.EXPAND | wx.BOTTOM, 6)
+        right_col.Add(self.status_label, 0, wx.EXPAND | wx.BOTTOM, 6)
         right_col.Add(self.precip_label, 0, wx.EXPAND | wx.BOTTOM, 2)
         right_col.Add(self.humidity_label, 0, wx.EXPAND | wx.BOTTOM, 2)
         right_col.Add(self.wind_label, 0, wx.EXPAND | wx.BOTTOM, 2)
@@ -485,6 +505,38 @@ class WeatherApp(wx.Frame):
 
         return current_panel
     
+    def _show_reconnect_status(self, seconds: int) -> None:
+        self._reconnect_seconds = seconds
+        self.status_label.SetLabel(f"Reconnecting… will retry automatically in {seconds}s")
+        self.status_label.Show()
+        self.Layout()
+
+    def _hide_reconnect_status(self) -> None:
+        self.status_label.Hide()
+        self.Layout()
+
+    def _start_reconnect_countdown(self, *, failed_req_id: int, seconds: int) -> None:
+        """UI-thread only: countdown label update."""
+
+        self._show_reconnect_status(seconds)
+
+        def tick():
+            # stop if request is no longer relevant
+            if not self._is_latest(failed_req_id):
+                self._hide_reconnect_status()
+                return
+
+            self._reconnect_seconds -= 1
+            if self._reconnect_seconds <= 0:
+                return  # retry will happen separately
+
+            self.status_label.SetLabel(
+                f"Reconnecting… will retry automatically in {self._reconnect_seconds}s"
+            )
+            wx.CallLater(1000, tick)
+
+        wx.CallLater(1000, tick)
+
     def _build_forecast_strip(self, parent: wx.Window) -> None:
         self.forecast_scroll = scrolled.ScrolledPanel(parent, size=(-1, 180), style=wx.SUNKEN_BORDER)
         self.forecast_scroll.SetBackgroundColour(self.palette.forecast_strip_bg)
@@ -616,6 +668,8 @@ class WeatherApp(wx.Frame):
         the UI thread. Uses a simple "latest request wins" guard so slower responses
         can't overwrite newer searches.
         """
+        self._hide_reconnect_status()
+
         if mark_user:
             self._user_started_searching = True
         
@@ -640,6 +694,11 @@ class WeatherApp(wx.Frame):
                                           units=self.settings.units,
                                           forecast_days=self.settings.forecast_days,)
                 logger.info("Worker success req_id=%s city=%r", local_req_id, local_city)
+
+                # hide "Reconnecting…" on success
+                self._call_after_if_latest(local_req_id, self._hide_reconnect_status)
+
+                # update UI with new data
                 self._call_after_if_latest(local_req_id, self.update_ui, data)
             except Exception as e:
                 # schedule retry only for network errors
