@@ -133,6 +133,7 @@ class HourlySeries:
         hours_ints: list[int] = []
         values: list[Any] = []
         clist: list[Any] = []
+        time_isos: list[str] = []
         pivot_index = None
 
         current_hour_int = None
@@ -144,9 +145,11 @@ class HourlySeries:
 
         for tstr, val, code in zip(self.time, values_src, self.code):
             day_part, time_part = tstr.split("T")
+
             if day_part != date_iso:
                 continue
 
+            time_isos.append(tstr)
             hour_int = int(time_part[:2])
             label = format_hour_label(hour_int)
 
@@ -168,6 +171,7 @@ class HourlySeries:
             "hours_int": hours_ints,
             "values": values,
             "codes": clist,
+            "time_isos": time_isos,
             "pivot_index": pivot_index,
         }
 
@@ -194,6 +198,8 @@ class DailyForecast:
     tmin: float | None
     tmax: float | None
     code: int | None
+    sunrise_iso: str | None
+    sunset_iso: str | None
     # optional later: precip_sum, wind_max, etc.
 
 @dataclass(frozen=True)

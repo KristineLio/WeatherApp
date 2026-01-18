@@ -33,7 +33,7 @@ class ModeMeta:
     """Metadata for a weather metric display mode."""
     tab_label: str
     fmt: Callable[[Value, Units], str]                     # (value, units) -> string (incl. unit)
-    icon: Callable[[Value, int | None], str]               # (value, code) -> filename
+    icon: Callable[[Value, int | None, bool], str]         # (value, code, night) -> filename
     values: Callable[["HourlySeries"], list[Value]]        # HourlySeries -> list of values
     current_value: Callable[["CurrentSnapshot"], Value]    # CurrentSnapshot -> metric value
 
@@ -60,21 +60,21 @@ def _fmt_percent(v: Value, units: Units) -> str:
 # ----------------------------
 # Icons (unchanged behavior)
 # ----------------------------
-def _icon_temp(v: Value, code: int | None) -> str:
-    return code_to_label_icon(code or 0)[1] if code is not None else "unknown.png"
+def _icon_temp(v: Value, code: int | None, night: bool) -> str:
+    return code_to_label_icon(code or 0, night=night)[1] if code is not None else "unknown.png"
 
 
-def _icon_precip(v: Value, code: int | None) -> str:
+def _icon_precip(v: Value, code: int | None, night: bool) -> str:
     vv = float(v) if v is not None else None
     return pick_icon_by_threshold(vv, PRECIP_ICONS, "precip_unknown.png")
 
 
-def _icon_wind(v: Value, code: int | None) -> str:
+def _icon_wind(v: Value, code: int | None, night: bool) -> str:
     vv = float(v) if v is not None else None
     return pick_icon_by_threshold(vv, WIND_ICONS, "wind_unknown.png")
 
 
-def _icon_humidity(v: Value, code: int | None) -> str:
+def _icon_humidity(v: Value, code: int | None, night: bool) -> str:
     vv = float(v) if v is not None else None
     return pick_icon_by_threshold(vv, HUMIDITY_ICONS, "hum_unknown.png")
 
@@ -124,8 +124,8 @@ def format_value(mode: HourlyMode, value: Value, units: Units) -> str:
     return get_mode_meta(mode).fmt(value, units)
 
 
-def icon_for(mode: HourlyMode, value: Value, code: int | None) -> str:
-    return get_mode_meta(mode).icon(value, code)
+def icon_for(mode: HourlyMode, value: Value, code: int | None, *, night: bool = False) -> str:
+    return get_mode_meta(mode).icon(value, code, night)
 
 
 

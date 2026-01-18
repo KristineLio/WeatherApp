@@ -67,7 +67,7 @@ class WeatherService:
                 "latitude": lat,
                 "longitude": lon,
                 "current_weather": True,
-                "daily": "temperature_2m_max,temperature_2m_min,weathercode",
+                "daily": "temperature_2m_max,temperature_2m_min,weathercode,sunrise,sunset",
                 "hourly": (
                     "temperature_2m,weathercode,apparent_temperature,windspeed,"
                     "relativehumidity_2m,precipitation_probability"
@@ -189,6 +189,8 @@ class WeatherService:
         tmaxs = daily.get("temperature_2m_max") or []
         tmins = daily.get("temperature_2m_min") or []
         codes = daily.get("weathercode") or []
+        sunrises = daily.get("sunrise") or []
+        sunsets = daily.get("sunset") or []
 
         n = min(len(times), len(tmaxs), len(tmins), len(codes))
         out: list[DailyForecast] = []
@@ -201,6 +203,8 @@ class WeatherService:
                     tmax=tmaxs[i],
                     tmin=tmins[i],
                     code=codes[i],
+                    sunrise_iso=sunrises[i],
+                    sunset_iso=sunsets[i],
                 )
             )
         return out

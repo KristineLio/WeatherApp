@@ -11,14 +11,14 @@ from weather_app.services.settings_store import SettingsStore
 
 from weather_app.utils.paths import ASSETS_DIR
 from weather_app.utils.icons import get_icon_bitmap, code_to_label_icon
-from weather_app.utils.formatters import format_full_date
+from weather_app.utils.formatters import format_full_date, is_night, time_hhmm_from_iso
 
 from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
 from weather_app.domain.modes import HourlyMode, DEFAULT_MODE, get_mode_meta, format_value
 
 from weather_app.ui.weather_card import WeatherCard 
 from weather_app.ui.hour_tile import HourTile
-from weather_app.ui.theme import LIGHT, DARK, pick_card_bg, get_palette
+from weather_app.ui.theme import pick_card_bg, get_palette
 
 from weather_app.ui.settings_dialog import SettingsDialog
 
@@ -743,10 +743,19 @@ class WeatherApp(wx.Frame):
         """
         cur: CurrentSnapshot = snapshot or data.current
 
+        # find the DailyForecast for the same date
+        day = next((d for d in data.daily if d.date_iso == cur.date_iso), None)
+
+        night = is_night(
+            cur.time_iso,
+            day.sunrise_iso if day else None,
+            day.sunset_iso if day else None,
+        )
+
         temp = cur.temp
         code = cur.code
-        label, icon_file = code_to_label_icon(code or 0)
-
+        label, icon_file = code_to_label_icon(code or 0, night=night)
+        
         # Decide header: "Now" for today, otherwise weekday
         today_iso = data.current.date_iso
         current_date = cur.date_iso
@@ -830,19 +839,42 @@ class WeatherApp(wx.Frame):
 
     def _build_hourly_for_date(self, date_iso: str, mode: HourlyMode = DEFAULT_MODE) -> dict:
         if not self.data:
-            return {"labels": [], "hours_int": [], "values": [], "codes": [], "pivot_index": None}
-        
+            return {"labels": [], "hours_int": [], "values": [], "codes": [], "time_isos": [], "nights": [], "pivot_index": None}
+
         series = self.data.hourly
         today_iso = self.data.current.date_iso
         current_time_iso = self.data.current.time_iso
 
-        return series.build_day(
+        # daily object for this date (for sunrise/sunset)
+        day = next((d for d in self.data.daily if d.date_iso == date_iso), None)
+        sunrise_iso = day.sunrise_iso if day else None
+        sunset_iso  = day.sunset_iso if day else None
+
+        out = series.build_day(
             date_iso,
             mode=mode,
             today_iso=today_iso,
             current_time_iso=current_time_iso,
         )
+        # compute night per hour
+        time_isos = out.get("time_isos", [])
+        out["nights"] = [is_night(t, sunrise_iso, sunset_iso) for t in time_isos]
 
+        def _hour_from_iso(s: str | None) -> int | None:
+            if not s:
+                return None
+            try:
+                return int(s.split("T")[1][:2])
+            except Exception:
+                return None
+
+        out["sunrise_hour"] = _hour_from_iso(sunrise_iso)
+        out["sunset_hour"]  = _hour_from_iso(sunset_iso)
+
+        out["sunrise_iso"] = sunrise_iso
+        out["sunset_iso"]  = sunset_iso
+
+        return out
     
     def _rebuild_hour_tiles(self, hourly: dict, date_iso: str | None):
         """
@@ -860,6 +892,11 @@ class WeatherApp(wx.Frame):
             hours_int = list(hourly.get("hours_int", []))
             values = list(hourly.get("values", []))
             codes = list(hourly.get("codes", []))
+            nights = list(hourly.get("nights", []))
+            sunrise_hour = hourly.get("sunrise_hour")
+            sunset_hour  = hourly.get("sunset_hour")
+            sunrise_iso  = hourly.get("sunrise_iso")
+            sunset_iso   = hourly.get("sunset_iso")
             mode = self.hourly_mode
 
             if not hours:
@@ -882,6 +919,7 @@ class WeatherApp(wx.Frame):
                     hours_int = hours_int[pivot:] + hours_int[:pivot]
                     values = values[pivot:] + values[:pivot]
                     codes = codes[pivot:] + codes[:pivot]
+                    nights = nights[pivot:] + nights[:pivot] 
                     hours[0] = "NOW"
 
             needed = len(hours)
@@ -904,12 +942,32 @@ class WeatherApp(wx.Frame):
             # 2) update existing tiles
             for i in range(needed):
                 tile = self.hour_tiles[i]
+
+                is_sunrise = sunrise_hour is not None and hours_int[i] == sunrise_hour
+                is_sunset  = sunset_hour  is not None and hours_int[i] == sunset_hour
+
+                if is_sunrise:
+                    tile.time_lbl.SetLabel("SUNRISE")
+                    tile.icon.SetBitmap(get_icon_bitmap("sunrise.png", size=(36, 36)))
+                    tile.value_lbl.SetLabel(time_hhmm_from_iso(sunrise_iso))
+                    tile.Show()
+                    continue
+
+                if is_sunset:
+                    tile.time_lbl.SetLabel("SUNSET")
+                    tile.icon.SetBitmap(get_icon_bitmap("sunset.png", size=(36, 36)))
+                    tile.value_lbl.SetLabel(time_hhmm_from_iso(sunset_iso)) 
+                    tile.Show()
+                    continue
+
+
                 tile.update_content(
                     time_label=hours[i],
                     mode=mode,
                     value=values[i],
                     code=codes[i],
                     units=self.settings.units,
+                    night=nights[i] if i < len(nights) else False,
                 )
                 if not tile.IsShown():
                     tile.Show()
@@ -938,6 +996,7 @@ class WeatherApp(wx.Frame):
 
         finally:
             self.today_scroll.Thaw()
+
     def _get_hourly_snapshot_for_date(self, date_iso: str):
         if not self.data:
             return None

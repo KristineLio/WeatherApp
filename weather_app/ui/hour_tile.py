@@ -63,13 +63,14 @@ class HourTile(wx.Panel):
         mode: HourlyMode,
         value: Value,
         code: int | None,
+        night: bool = False,
         units: Units | None = None,
     ) -> None:
         if units is None:
             units = self._units
         self.time_lbl.SetLabel(time_label)
 
-        icon_file = icon_for(mode, value, code)
+        icon_file = icon_for(mode, value, code, night=night)
         self.icon.SetBitmap(get_icon_bitmap(icon_file, size=(36, 36)))
 
         self.value_lbl.SetLabel(format_value(mode, value, units))

@@ -11,7 +11,7 @@ IconTable: TypeAlias = Iterable[Tuple[float, str]]
 # ============================================================================
 
 WEATHERCODE_MAP = {
-    # open-meteo weather codes → (label, suggested icon filename in your assets folder)
+    # open-meteo weather codes → (label, suggested icon filename in assets folder)
     0: ("Clear sky", "clear.png"),
     1: ("Mainly clear", "partly.png"),
     2: ("Partly cloudy", "partly.png"),
@@ -94,10 +94,15 @@ def get_icon_bitmap(filename: str, size=None) -> wx.Bitmap:
     _ICON_CACHE[key] = bmp
     return bmp
 
+def code_to_label_icon(code: int, *, night: bool = False):
+    label, icon = WEATHERCODE_MAP.get(int(code), ("Weather", "unknown.png"))
 
-def code_to_label_icon(code: int):
-    """Map weather code to (label, icon_filename)."""
-    return WEATHERCODE_MAP.get(int(code), ("Weather", "unknown.png"))
+    if night:
+        base, ext = icon.rsplit(".", 1)
+        night_icon = f"{base}_night.{ext}"
+        return label, night_icon
+
+    return label, icon
 
 
 def pick_icon_by_threshold(
