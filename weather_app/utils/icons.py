@@ -1,5 +1,6 @@
 import wx
 import os
+import wx.adv
 from weather_app.utils.paths import ASSETS_DIR
 from typing import Iterable, Tuple, TypeAlias
 
@@ -124,3 +125,70 @@ def pick_icon_by_threshold(
                 return icon
 
         return fallback
+
+
+# ============================================================================
+# Animated Icon Cache
+# ============================================================================
+_ANIM_CACHE: dict[str, wx.adv.Animation] = {}
+
+def code_to_gif(code: int | None, *, night: bool = False) -> str:
+    """
+    Map Open-Meteo weather code -> animated GIF filename.
+
+    Used ONLY for the current panel (optional animation).
+    Hourly + forecast icons remain static PNGs.
+    """
+    if code is None:
+        return "unknown.gif"
+
+    base = {
+        0: "clear.gif",
+        1: "partly.gif",
+        2: "partly.gif",
+        3: "cloudy.gif",
+
+        45: "fog.gif",
+        48: "fog.gif",
+
+        51: "drizzle.gif",
+        53: "drizzle.gif",
+        55: "drizzle.gif",
+
+        61: "rain.gif",
+        63: "rain.gif",
+        65: "rain.gif",
+
+        71: "snow.gif",
+        73: "snow.gif",
+        75: "snow.gif",
+
+        95: "storm.gif",
+        96: "storm.gif",
+        99: "storm.gif",
+    }.get(int(code), "unknown.gif")
+
+    if night:
+        return base.replace(".gif", "_night.gif")
+
+    return base
+
+def get_anim(filename: str) -> wx.adv.Animation:
+    full_path = os.path.join(ASSETS_DIR, filename)
+    if not os.path.exists(full_path):
+        full_path = os.path.join(ASSETS_DIR, "unknown.gif")  # optional fallback
+    if full_path in _ANIM_CACHE:
+        return _ANIM_CACHE[full_path]
+    anim = wx.adv.Animation(full_path)
+    _ANIM_CACHE[full_path] = anim
+    return anim
+
+def icon_for_current_static(panel: wx.Window, icon_file: str) -> wx.Control:
+    # matches what you already do: StaticBitmap
+    return wx.StaticBitmap(panel, bitmap=get_icon_bitmap(icon_file, size=(60, 60)))
+
+def icon_for_current_animated(panel: wx.Window, gif_file: str) -> wx.Control:
+    ctrl = wx.adv.AnimationCtrl(panel)
+    ctrl.SetAnimation(get_anim(gif_file))
+    ctrl.Play()
+    return ctrl

@@ -44,6 +44,9 @@ class SettingsDialog(wx.Dialog):
         self.lbl_forecast_days = wx.StaticText(self, label="Forecast days:")
         self.forecast_days = wx.SpinCtrl(self, min=3, max=14, initial=getattr(settings, "forecast_days", 7))
 
+        self.chk_animated_current = wx.CheckBox(self, label="Animate current weather icon (GIF)")
+        self.chk_animated_current.SetValue(bool(getattr(settings, "animated_current_icon", False)))
+
 
         self.chk_use_detected = wx.CheckBox(self, label="Use detected city on startup")
         self.chk_use_detected.SetValue(bool(settings.use_detected_on_start))
@@ -72,6 +75,7 @@ class SettingsDialog(wx.Dialog):
         form.Add(self.forecast_days, 1, wx.EXPAND)
 
         root.Add(form, 1, wx.EXPAND | wx.ALL, 14)
+        root.Add(self.chk_animated_current, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 14)
         root.Add(self.chk_use_detected, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 14)
         root.Add(self.chk_ask_detected, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 14)
 
@@ -114,6 +118,7 @@ class SettingsDialog(wx.Dialog):
         self.units.SetSelection(0)  # Metric
         self.theme.SetSelection(0)  # Light
         self.forecast_days.SetValue(Settings().forecast_days)
+        self.chk_animated_current.SetValue(Settings().animated_current_icon)
 
         # Update dialog theme immediately to match selection
         self.palette = get_palette(Theme.LIGHT)
@@ -145,6 +150,9 @@ class SettingsDialog(wx.Dialog):
         self.lbl_forecast_days.SetForegroundColour(p.text_primary)
         self.forecast_days.SetForegroundColour(p.input_text)
         self.forecast_days.SetBackgroundColour(p.input_bg)
+
+        for cb in (self.chk_use_detected, self.chk_ask_detected, self.chk_animated_current):
+            cb.SetForegroundColour(p.text_primary)
         
         for cb in (self.chk_use_detected, self.chk_ask_detected):
             cb.SetForegroundColour(p.text_primary)
@@ -162,6 +170,8 @@ class SettingsDialog(wx.Dialog):
 
         forecast_days = int(self.forecast_days.GetValue())
 
+        animated_current_icon = bool(self.chk_animated_current.GetValue())
+
         use_detected = bool(self.chk_use_detected.GetValue())
         ask_detected = bool(self.chk_ask_detected.GetValue()) and (not use_detected)
 
@@ -178,6 +188,7 @@ class SettingsDialog(wx.Dialog):
             units=units,
             theme=theme,
             forecast_days=forecast_days,
+            animated_current_icon=animated_current_icon,
             location_prompted=location_prompted,
             use_detected_on_start=use_detected,
             ask_detected_on_start=ask_detected,

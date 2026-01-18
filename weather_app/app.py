@@ -2,14 +2,8 @@ import logging
 import wx
 
 from weather_app.ui.frame import WeatherApp
+from weather_app.utils.logging_config import setup_logging
 
-
-def setup_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,  # switch to DEBUG when needed
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    )
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 def main() -> None:

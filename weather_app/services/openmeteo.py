@@ -1,5 +1,7 @@
 import requests
 import logging
+import time
+import threading
 from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
 from weather_app.utils.formatters import weekday_from_iso
 from weather_app.domain.settings import Units
@@ -31,11 +33,41 @@ class WeatherService:
         forecast_timeout: int = _FORECAST_TIMEOUT,
         session: requests.Session | None = None,
     ):
+        self._cache: dict[tuple, tuple[float, WeatherData]] = {}
+        self._cache_ttl_s = 120  # 2 minutes
+        self._cache_lock = threading.Lock()
+
         self._geo_url = geo_url
         self._forecast_url = forecast_url
         self._geo_timeout = geo_timeout
         self._forecast_timeout = forecast_timeout
         self._session = session or requests.Session()
+
+    # ---------- caching helpers ----------
+    """ Simple in-memory cache with TTL. """
+    """
+        “Cache-then-refresh”
+        If cached data exists and is recent → show it immediately
+        In background → still fetch fresh data and update UI when done
+    """
+    def _cache_key(self, city: str, units, forecast_days: int) -> tuple:
+        return (city.strip().lower(), str(units), int(forecast_days))
+
+    def _cache_get(self, key):
+        with self._cache_lock:
+            item = self._cache.get(key)
+            if not item:
+                return None
+            ts, data = item
+            if time.time() - ts > self._cache_ttl_s:
+                self._cache.pop(key, None)
+                return None
+            return data
+    
+    def _cache_set(self, key, data):
+        with self._cache_lock:
+            self._cache[key] = (time.time(), data)
+
 
     # ---------- public API ----------
 
@@ -57,11 +89,24 @@ class WeatherService:
         Fetch weather for a city and return a fully built WeatherData domain object.
         Raises RuntimeError / ValueError with user-friendly messages.
         """
+        key = self._cache_key(city, units, forecast_days)
+        t0 = time.perf_counter()
+        cached = self._cache_get(key)
+        if cached is not None:
+            logger.info(
+                "Cache HIT city=%r (%.2f ms)",
+                city,
+                (time.perf_counter() - t0) * 1000,
+            )
+            return cached
+        logger.debug("Cache MISS city=%r units=%s days=%s", city, units, forecast_days)
+       
+
         city = (city or "").strip() or "Sofia"
         logger.info("Fetch weather start city=%r", city)
         try:
             lat, lon, resolved_name, country = self._geocode_city(city)
-            logger.debug("Geocoded city=%r -> lat=%s lon=%s resolved=%r country=%r", city, lat, lon, resolved_name, country)
+            logger.info("Geocoded city=%r -> lat=%s lon=%s resolved=%r country=%r", city, lat, lon, resolved_name, country)
 
             params = {
                 "latitude": lat,
@@ -132,6 +177,11 @@ class WeatherService:
                 city, wd.current.city, lat, lon
             )
 
+            logger.debug(
+                "Cache STORE city=%r units=%s days=%s ttl=%ss",
+                city, units, forecast_days, self._cache_ttl_s
+            )
+            self._cache_set(key, wd)
             return wd
         except Exception as e:
             logger.warning("Fetch weather failed city=%r err=%s", city, e)
@@ -142,8 +192,11 @@ class WeatherService:
 
     def _get_json(self, url: str, *, params: dict | None = None, timeout: int = 10) -> dict:
         """HTTP GET → JSON with consistent errors."""
+        endpoint = url.rstrip("/").split("/")[-1]
+
         try:
-            logger.debug("HTTP GET %s params=%s timeout=%s", url, params, timeout)
+            safe_params = {k: v for k, v in params.items() if k not in {"hourly", "daily"}}
+            logger.debug("HTTP GET endpoint=%s url=%s params=%s timeout=%s", endpoint, url, safe_params, timeout)
             r = self._session.get(url, params=params, timeout=timeout)
             r.raise_for_status()
             return r.json()
@@ -178,8 +231,8 @@ class WeatherService:
             raise ValueError("City not found. Please try another name.")
         r0 = results[0]
         return (
-            r0["latitude"],
-            r0["longitude"],
+            float(r0["latitude"]),
+            float(r0["longitude"]),
             r0.get("name", city),
             r0.get("country", ""),
         )

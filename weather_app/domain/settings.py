@@ -22,6 +22,7 @@ class Settings:
     theme: Theme = Theme.LIGHT
 
     forecast_days: int = 7
+    animated_current_icon: bool = False
 
     location_prompted: bool = False
     use_detected_on_start: bool = False
@@ -44,6 +45,7 @@ class Settings:
             units=Units(str(data.get("units") or Units.METRIC.value)),
             theme=Theme(str(data.get("theme") or Theme.LIGHT.value)),
             forecast_days=int(data.get("forecast_days", 7)),
+            animated_current_icon=bool(data.get("animated_current_icon", False)),
             location_prompted=bool(data.get("location_prompted", False)),
             use_detected_on_start=bool(data.get("use_detected_on_start", False)),
             ask_detected_on_start=bool(data.get("ask_detected_on_start", True)),

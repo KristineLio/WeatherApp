@@ -1,5 +1,6 @@
 import wx
 import os
+import wx.adv
 
 import logging
 import threading
@@ -10,7 +11,7 @@ from weather_app.services.openmeteo import WeatherService
 from weather_app.services.settings_store import SettingsStore
 
 from weather_app.utils.paths import ASSETS_DIR
-from weather_app.utils.icons import get_icon_bitmap, code_to_label_icon
+from weather_app.utils.icons import get_icon_bitmap, code_to_label_icon, get_anim, code_to_gif
 from weather_app.utils.formatters import format_full_date, is_night, time_hhmm_from_iso
 
 from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
@@ -330,6 +331,11 @@ class WeatherApp(wx.Frame):
             forecast_changed = getattr(new_settings, "forecast_days", 7) != old_forecast
             default_changed = new_settings.default_city != old_settings.default_city
 
+            animated_changed = (
+                getattr(new_settings, "animated_current_icon", False)
+                != getattr(old_settings, "animated_current_icon", False)
+            )
+
             # commit + persist
             self.settings = new_settings
             self.settings_store.save(self.settings)
@@ -337,6 +343,12 @@ class WeatherApp(wx.Frame):
             if theme_changed:
                 self._apply_theme()
                 self._apply_theme_to_existing_ui()
+
+            if animated_changed and hasattr(self, "_cur_icon_png"):
+                self._set_current_icon(icon_png=self._cur_icon_png, icon_gif=getattr(self, "_cur_icon_gif", None))
+                self.icon_host.Layout()
+                self.current_panel.Layout()
+                self.current_panel.Refresh()
 
             # If units changed: refetch
             if units_changed and self.location.GetValue().strip():
@@ -443,12 +455,21 @@ class WeatherApp(wx.Frame):
         self.temp_label = wx.StaticText(current_panel, label="--")
         self._style_light_label(self.temp_label, self.FONT_TEMP)
 
-        self.current_icon = wx.StaticBitmap(
-            current_panel, bitmap=get_icon_bitmap("unknown.png", size=(60, 60))
+        self.icon_host = wx.Panel(current_panel)
+        self.icon_host.SetBackgroundColour(self.COL_CURRENT)
+
+        self.icon_host_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.icon_host.SetSizer(self.icon_host_sizer)
+
+        # initial control = static bitmap (current behavior)
+        self.current_icon_ctrl = wx.StaticBitmap(
+            self.icon_host, bitmap=get_icon_bitmap("unknown.png", size=(60, 60))
         )
+        self.icon_host_sizer.Add(self.current_icon_ctrl, 0, wx.ALIGN_LEFT)
+
 
         left_col.Add(self.temp_label, 0, wx.BOTTOM, 2)
-        left_col.Add(self.current_icon, 0, wx.BOTTOM, 4)
+        left_col.Add(self.icon_host, 0, wx.BOTTOM, 4)
 
         # RIGHT
         self.desc_label = wx.StaticText(current_panel, label=" ", style=wx.ALIGN_CENTER)
@@ -680,6 +701,13 @@ class WeatherApp(wx.Frame):
         if not city:
             return
         
+        logger.info(
+            "User search city=%r units=%s forecast_days=%s",
+            city,
+            self.settings.units.value,
+            getattr(self.settings, "forecast_days", 7),
+        )
+                
         self.settings.last_city = city
         self.settings_store.save(self.settings)
 
@@ -690,9 +718,11 @@ class WeatherApp(wx.Frame):
         def work(local_city: str, local_req_id: int):
             logger.info("Worker start req_id=%s city=%r", local_req_id, local_city)
             try:
-                data = self.service.fetch(local_city,
-                                          units=self.settings.units,
-                                          forecast_days=self.settings.forecast_days,)
+                data = self.service.fetch(
+                    local_city,
+                    units=self.settings.units,
+                    forecast_days=self.settings.forecast_days,
+                )
                 logger.info("Worker success req_id=%s city=%r", local_req_id, local_city)
 
                 # hide "Reconnecting…" on success
@@ -700,19 +730,31 @@ class WeatherApp(wx.Frame):
 
                 # update UI with new data
                 self._call_after_if_latest(local_req_id, self.update_ui, data)
-            except Exception as e:
-                # schedule retry only for network errors
-                if isinstance(e, RuntimeError) and "Network" in str(e):
-                    logger.info("Scheduling auto-refetch due to network error city=%r", local_city)
-                    self._call_after_if_latest(local_req_id, self._schedule_refetch, local_city, failed_req_id=local_req_id,)
 
-                # log: full traceback only for unexpected errors
-                if isinstance(e, RuntimeError):
-                    logger.error("Worker error req_id=%s city=%r err=%s", local_req_id, local_city, e)
-                else:
-                    logger.exception("Worker error req_id=%s city=%r", local_req_id, local_city)
-
+            except ValueError as e:
+                # user input issue (no traceback)
+                logger.warning("Worker input error req_id=%s city=%r err=%s", local_req_id, local_city, e)
                 self._call_after_if_latest(local_req_id, self.show_error, str(e))
+
+            except RuntimeError as e:
+                # network/service issue (retry only on network errors)
+                if "Network" in str(e):
+                    logger.info("Scheduling auto-refetch due to network error city=%r", local_city)
+                    self._call_after_if_latest(
+                        local_req_id,
+                        self._schedule_refetch,
+                        local_city,
+                        failed_req_id=local_req_id,
+                    )
+
+                logger.error("Worker runtime error req_id=%s city=%r err=%s", local_req_id, local_city, e)
+                self._call_after_if_latest(local_req_id, self.show_error, str(e))
+
+            except Exception:
+                # unexpected bug (traceback)
+                logger.exception("Worker unexpected error req_id=%s city=%r", local_req_id, local_city)
+                self._call_after_if_latest(local_req_id, self.show_error, "Unexpected error. Please try again.")
+
             finally:
                 # Only the latest request should end loading
                 self._call_after_if_latest(local_req_id, self._set_current_loading, False)
@@ -723,16 +765,51 @@ class WeatherApp(wx.Frame):
         self.temp_label.SetLabel("—°C")
         self.desc_label.SetLabel(msg)
         wx.MessageBox(msg, "Weather App", wx.OK | wx.ICON_ERROR)
-    """
-    def show_error(self, msg: str):
-        self.temp_label.SetLabel("—°C")
-        self.desc_label.SetLabel(msg)
-    """
+    
     def _set_current_metric(self, label: wx.StaticText, mode: HourlyMode, snapshot: CurrentSnapshot) -> None:
         
         meta = get_mode_meta(mode)
         v = meta.current_value(snapshot)
         label.SetLabel(f"{meta.tab_label}: {meta.fmt(v, self.settings.units)}")
+    
+    def _set_current_icon(self, *, icon_png: str, icon_gif: str | None = None) -> None:
+        """
+        Current panel only: swap between StaticBitmap and AnimationCtrl
+        depending on settings. Keeps hourly + forecast static.
+        """
+        want_anim = bool(getattr(self.settings, "animated_current_icon", False))
+
+        # figure out current type
+        is_anim = isinstance(getattr(self, "current_icon_ctrl", None), wx.adv.AnimationCtrl)
+
+        # if we need to rebuild control
+        if want_anim != is_anim:
+            if self.current_icon_ctrl:
+                self.current_icon_ctrl.Destroy()
+
+            if want_anim:
+                gif = icon_gif or "unknown.gif"
+                self.current_icon_ctrl = wx.adv.AnimationCtrl(self.icon_host)
+                self.current_icon_ctrl.SetAnimation(get_anim(gif))  # from utils/icons.py
+                self.current_icon_ctrl.Play()
+            else:
+                self.current_icon_ctrl = wx.StaticBitmap(
+                    self.icon_host, bitmap=get_icon_bitmap(icon_png, size=(60, 60))
+                )
+
+            self.icon_host_sizer.Clear(delete_windows=False)
+            self.icon_host_sizer.Add(self.current_icon_ctrl, 0, wx.ALIGN_LEFT)
+            self.icon_host.Layout()
+            return
+
+        # same type: just update content
+        if want_anim:
+            gif = icon_gif or "unknown.gif"
+            self.current_icon_ctrl.SetAnimation(get_anim(gif))
+            self.current_icon_ctrl.Play()
+        else:
+            self.current_icon_ctrl.SetBitmap(get_icon_bitmap(icon_png, size=(60, 60)))
+
 
     def _update_current_block(self, data: WeatherData, *, snapshot: CurrentSnapshot | None = None):
         """
@@ -772,7 +849,10 @@ class WeatherApp(wx.Frame):
         self.desc_label.SetLabel(label)
         self.city_label.SetLabel(cur.city)
 
-        self.current_icon.SetBitmap(get_icon_bitmap(icon_file, size=(60, 60)))
+        # current icon (png + gif for animation)
+        self._cur_icon_png = icon_file
+        self._cur_icon_gif = code_to_gif(code, night=night)
+        self._set_current_icon(icon_png=self._cur_icon_png, icon_gif=self._cur_icon_gif)
 
         # feels like (keep as-is or also move into MODE_META later)
         self.feels_label.SetLabel("Feels like " + format_value(HourlyMode.TEMPERATURE, cur.feels_like, self.settings.units))
