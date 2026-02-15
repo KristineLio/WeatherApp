@@ -1,4 +1,3 @@
-import logging
 import wx
 
 from weather_app.ui.frame import WeatherApp
