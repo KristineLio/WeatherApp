@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, TYPE_CHECKING, TypeAlias
 
-from weather_app.utils.icons import (
+from weather_app.utils.icon_logic import (
     pick_icon_by_threshold,
     code_to_label_icon,
     PRECIP_ICONS,

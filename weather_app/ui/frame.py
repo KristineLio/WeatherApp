@@ -10,8 +10,9 @@ import wx.lib.scrolledpanel as scrolled
 from weather_app.services.openmeteo import WeatherService
 from weather_app.services.settings_store import SettingsStore
 
-from weather_app.utils.paths import ASSETS_DIR
-from weather_app.utils.icons import get_icon_bitmap, code_to_label_icon, get_anim, code_to_gif
+from weather_app.utils.paths import PNG_DIR
+from weather_app.utils.icons import get_icon_bitmap, get_anim
+from weather_app.utils.icon_logic import code_to_label_icon, code_to_gif
 from weather_app.utils.formatters import format_full_date, is_night, time_hhmm_from_iso
 
 from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
@@ -290,7 +291,7 @@ class WeatherApp(wx.Frame):
         self.location.Bind(wx.EVT_TEXT_ENTER, self._on_get_weather)
 
         # search button
-        search_icon_path = os.path.join(ASSETS_DIR, "search_icon30.png")
+        search_icon_path = os.fspath(PNG_DIR / "search_icon30.png")
         self.search_btn = wx.BitmapButton(
             top_bar,
             bitmap=wx.Bitmap(search_icon_path, wx.BITMAP_TYPE_PNG),
