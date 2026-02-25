@@ -17,15 +17,29 @@ class HourlySeries:
 
     @classmethod
     def from_api(cls, hourly: dict) -> "HourlySeries":
-        """Build HourlySeries from Open-Meteo API hourly block."""
+        """Build HourlySeries from Open-Meteo API hourly block.
+
+        Normalizes all arrays to the length of `time`:
+        - truncate extra values
+        - pad missing values with None
+        """
+        time = list(hourly.get("time") or [])
+        n = len(time)
+
+        def _norm(arr):
+            a = list(arr or [])
+            if len(a) >= n:
+                return a[:n]
+            return a + [None] * (n - len(a))
+
         return cls(
-            time=hourly.get("time") or [],
-            temp=hourly.get("temperature_2m") or [],
-            code=hourly.get("weathercode") or [],
-            feels_like=hourly.get("apparent_temperature") or [],
-            humidity=hourly.get("relativehumidity_2m") or [],
-            precip=hourly.get("precipitation_probability") or [],
-            wind=hourly.get("windspeed") or [],
+            time=time,
+            temp=_norm(hourly.get("temperature_2m")),
+            code=_norm(hourly.get("weathercode")),
+            feels_like=_norm(hourly.get("apparent_temperature")),
+            humidity=_norm(hourly.get("relativehumidity_2m")),
+            precip=_norm(hourly.get("precipitation_probability")),
+            wind=_norm(hourly.get("windspeed")),
         )
 
     # helper to safely get value at index or None, Guard lengths (API weirdness)

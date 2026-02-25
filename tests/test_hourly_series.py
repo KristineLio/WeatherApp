@@ -90,3 +90,83 @@ def test_build_day_filters_only_selected_date_and_sets_pivot_index_for_today_cur
 
     # pivot should point at the 15:00 entry (index 1 in the day lists)
     assert day["pivot_index"] == 1
+
+#------------------------------------------#
+#           test hourly series edges       #
+#------------------------------------------#
+
+def test_build_day_when_date_has_no_hours_returns_empty_and_pivot_none():
+    s = HourlySeries(
+        time=["2026-01-18T12:00"],
+        temp=[10.0],
+        code=[1],
+        feels_like=[9.0],
+        humidity=[50],
+        precip=[10],
+        wind=[5.0],
+    )
+
+    day = s.build_day(
+        "2026-01-19",
+        mode=HourlyMode.TEMPERATURE,
+        today_iso="2026-01-19",
+        current_time_iso="2026-01-19T12:30",
+    )
+
+    assert day["labels"] == []
+    assert day["hours_int"] == []
+    assert day["values"] == []
+    assert day["codes"] == []
+    assert day["time_isos"] == []
+    assert day["pivot_index"] is None
+
+
+def test_derive_current_extras_when_hour_not_found_returns_all_none():
+    s = HourlySeries(
+        time=["2026-01-18T12:00"],
+        temp=[10.0],
+        code=[1],
+        feels_like=[9.0],
+        humidity=[50],
+        precip=[10],
+        wind=[5.0],
+    )
+
+    # current time bucket wants 13:00 which doesn't exist
+    feels, hum, precip, wind = s.derive_current_extras("2026-01-18T13:45")
+    assert feels is None
+    assert hum is None
+    assert precip is None
+    assert wind is None
+
+
+def test_snapshot_for_date_when_no_matching_date_returns_none():
+    s = HourlySeries(
+        time=["2026-01-18T12:00"],
+        temp=[10.0],
+        code=[1],
+        feels_like=[9.0],
+        humidity=[50],
+        precip=[10],
+        wind=[5.0],
+    )
+
+    assert s.snapshot_for_date("2026-01-19") is None
+
+
+def test_build_day_pivot_index_none_when_today_or_current_time_missing():
+    s = HourlySeries(
+        time=["2026-01-18T12:00", "2026-01-18T13:00"],
+        temp=[10.0, 11.0],
+        code=[1, 2],
+        feels_like=[9.0, 10.0],
+        humidity=[50, 55],
+        precip=[10, 20],
+        wind=[5.0, 6.0],
+    )
+
+    day1 = s.build_day("2026-01-18", mode=HourlyMode.TEMPERATURE, today_iso=None, current_time_iso="2026-01-18T12:30")
+    assert day1["pivot_index"] is None
+
+    day2 = s.build_day("2026-01-18", mode=HourlyMode.TEMPERATURE, today_iso="2026-01-18", current_time_iso=None)
+    assert day2["pivot_index"] is None
