@@ -39,3 +39,22 @@ def test_is_night_after_sunset_true():
 def test_time_hhmm_from_iso_and_none():
     assert time_hhmm_from_iso("2026-01-18T07:52") == "07:52"
     assert time_hhmm_from_iso(None) == ""
+
+                  
+
+def test_format_hour_label_midnight_and_noon_are_reasonable():
+    """Guard: platform-specific strftime should produce a non-empty AM/PM label for 0 and 12."""
+    s0 = format_hour_label(0).strip()
+    s12 = format_hour_label(12).strip()
+
+    # not empty / not whitespace
+    assert s0
+    assert s12
+
+    # should still be a "time-like" label: contains at least one digit
+    assert any(ch.isdigit() for ch in s0)
+    assert any(ch.isdigit() for ch in s12)
+
+    # keep your existing contract: should indicate AM/PM
+    assert ("AM" in s0.upper()) or ("PM" in s0.upper())
+    assert ("AM" in s12.upper()) or ("PM" in s12.upper())

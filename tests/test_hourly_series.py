@@ -1,3 +1,5 @@
+"""HourlySeries behavior tests cover pivot index correctness, filtering by day, fallbacks, and edge cases"""
+
 from weather_app.domain.models import HourlySeries
 from weather_app.domain.modes import HourlyMode
 
@@ -91,11 +93,9 @@ def test_build_day_filters_only_selected_date_and_sets_pivot_index_for_today_cur
     # pivot should point at the 15:00 entry (index 1 in the day lists)
     assert day["pivot_index"] == 1
 
-#------------------------------------------#
-#           test hourly series edges       #
-#------------------------------------------#
 
 def test_build_day_when_date_has_no_hours_returns_empty_and_pivot_none():
+    """Edge case: no hours for selected date returns empty lists and pivot None."""
     s = HourlySeries(
         time=["2026-01-18T12:00"],
         temp=[10.0],
@@ -170,3 +170,40 @@ def test_build_day_pivot_index_none_when_today_or_current_time_missing():
 
     day2 = s.build_day("2026-01-18", mode=HourlyMode.TEMPERATURE, today_iso="2026-01-18", current_time_iso=None)
     assert day2["pivot_index"] is None
+
+
+def test_hourlyseries_from_api_normalizes_lengths_truncate_and_pad_with_none():
+    """Guard rail: from_api() truncates longer arrays and pads shorter/missing arrays with None."""
+    hourly = {
+        "time": ["2026-01-18T11:00", "2026-01-18T12:00", "2026-01-18T13:00"],  # n=3
+
+        # longer than time -> truncate
+        "temperature_2m": [8.0, 10.0, 11.0, 999.0],
+        "weathercode": [1, 2, 3, 99],
+
+        # shorter than time -> pad with None
+        "apparent_temperature": [7.0],          # -> [7.0, None, None]
+        "relativehumidity_2m": [60, 55],        # -> [60, 55, None]
+        "precipitation_probability": [],        # -> [None, None, None]
+
+        # missing key -> treated as [] -> pad with None
+        # "windspeed": ...
+    }
+
+    s = HourlySeries.from_api(hourly)
+
+    assert s.time == ["2026-01-18T11:00", "2026-01-18T12:00", "2026-01-18T13:00"]
+
+    # truncation
+    assert s.temp == [8.0, 10.0, 11.0]
+    assert s.code == [1, 2, 3]
+
+    # padding
+    assert s.feels_like == [7.0, None, None]
+    assert s.humidity == [60, 55, None]
+    assert s.precip == [None, None, None]
+    assert s.wind == [None, None, None]
+
+    # internal consistency
+    n = len(s.time)
+    assert n == len(s.temp) == len(s.code) == len(s.feels_like) == len(s.humidity) == len(s.precip) == len(s.wind)

@@ -68,3 +68,6 @@ def test_cache_key_normalizes_city_strip_lower_and_forecast_days_int():
 
     assert svc.forecast_calls == 1
     assert svc.geo_calls == 1
+
+
+    

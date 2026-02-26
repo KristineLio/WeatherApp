@@ -51,17 +51,17 @@ def test_code_to_gif_day_night_and_none():
     assert code_to_gif(0, night=True) == "clear_night.gif"
     assert code_to_gif(None) == "unknown.gif"
 
-#---------------------------------------------#
-#           Edge cases                        #
-#---------------------------------------------#
+
 
 def test_unknown_weather_code_returns_weather_unknown_png():
+    """Edge: unknown WMO code falls back to unknown icon (day)."""
     label, icon = code_to_label_icon(999, night=False)
     assert label == "Weather"
     assert icon == "unknown.png"
 
 
 def test_unknown_weather_code_at_night_gets_night_suffix():
+    """Edge: unknown WMO code at night falls back to unknown_night.png."""
     label, icon = code_to_label_icon(999, night=True)
     assert label == "Weather"
     assert icon == "unknown_night.png"

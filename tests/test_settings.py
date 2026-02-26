@@ -51,3 +51,36 @@ def test_settings_from_dict_last_city_fallbacks_to_default_city():
     s = Settings.from_dict({"default_city": "Burgas"})
     assert s.default_city == "Burgas"
     assert s.last_city == "Burgas"
+
+
+def test_settings_from_dict_empty_default_city_falls_back_to_sofia():
+    s = Settings.from_dict({"default_city": "   "})
+    assert s.default_city == "Sofia"
+    assert s.last_city == "Sofia"
+
+
+def test_settings_from_dict_empty_last_city_falls_back_to_default_city():
+    s = Settings.from_dict({"default_city": "Varna", "last_city": "  "})
+    assert s.default_city == "Varna"
+    assert s.last_city == "Varna"
+
+#invalid enum strings do not crash and revert to defaults.
+def test_settings_from_dict_invalid_enums_fallback_to_defaults():
+    s = Settings.from_dict({"units": "banana", "theme": "ultra_dark"})
+
+    assert s.units == Units.METRIC
+    assert s.theme == Theme.LIGHT
+
+
+#invalid forecast_days 
+def test_settings_from_dict_bad_forecast_days_falls_back_to_default():
+    s = Settings.from_dict({"forecast_days": "abc"})
+    assert s.forecast_days == 7
+
+
+def test_settings_from_dict_forecast_days_clamped_to_range():
+    assert Settings.from_dict({"forecast_days": -5}).forecast_days == 1
+    assert Settings.from_dict({"forecast_days": 0}).forecast_days == 1
+    assert Settings.from_dict({"forecast_days": 1}).forecast_days == 1
+    assert Settings.from_dict({"forecast_days": 14}).forecast_days == 14
+    assert Settings.from_dict({"forecast_days": 20}).forecast_days == 14

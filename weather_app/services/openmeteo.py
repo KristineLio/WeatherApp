@@ -236,7 +236,6 @@ class WeatherService:
             r0.get("name", city),
             r0.get("country", ""),
         )
-
     def _parse_daily(self, daily: dict) -> list[DailyForecast]:
         times = daily.get("time") or []
         tmaxs = daily.get("temperature_2m_max") or []
@@ -247,8 +246,12 @@ class WeatherService:
 
         n = min(len(times), len(tmaxs), len(tmins), len(codes))
         out: list[DailyForecast] = []
+
         for i in range(n):
             date_iso = times[i]
+            sunrise_iso = sunrises[i] if i < len(sunrises) else None
+            sunset_iso = sunsets[i] if i < len(sunsets) else None
+
             out.append(
                 DailyForecast(
                     date_iso=date_iso,
@@ -256,9 +259,9 @@ class WeatherService:
                     tmax=tmaxs[i],
                     tmin=tmins[i],
                     code=codes[i],
-                    sunrise_iso=sunrises[i],
-                    sunset_iso=sunsets[i],
+                    sunrise_iso=sunrise_iso,
+                    sunset_iso=sunset_iso,
                 )
             )
         return out
-    
+   

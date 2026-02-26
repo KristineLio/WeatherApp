@@ -38,15 +38,47 @@ class Settings:
     def from_dict(cls, data: dict) -> "Settings":
         if not isinstance(data, dict):
             return cls()
+        
+        # --- resilient city parsing ---
+        raw_default_city = str(data.get("default_city") or "").strip()
+        default_city = raw_default_city or "Sofia"
+
+        raw_last_city = str(data.get("last_city") or "").strip()
+        last_city = raw_last_city or default_city
+
+        # --- resilient enum parsing ---
+        raw_units = str(data.get("units") or Units.METRIC.value)
+        try:
+            units = Units(raw_units)
+        except ValueError:
+            units = Units.METRIC
+
+        raw_theme = str(data.get("theme") or Theme.LIGHT.value)
+        try:
+            theme = Theme(raw_theme)
+        except ValueError:
+            theme = Theme.LIGHT
+        
+        # --- resilient forecast_days parsing ---
+        raw_days = data.get("forecast_days", 7)
+
+        try:
+            forecast_days = int(raw_days)
+        except (TypeError, ValueError):
+            forecast_days = 7
+
+        # clamp to allowed range 1–14
+        forecast_days = max(1, min(14, forecast_days))
 
         return cls(
-            default_city=str(data.get("default_city") or "Sofia"),
-            last_city=str(data.get("last_city") or data.get("default_city") or "Sofia"),
-            units=Units(str(data.get("units") or Units.METRIC.value)),
-            theme=Theme(str(data.get("theme") or Theme.LIGHT.value)),
-            forecast_days=int(data.get("forecast_days", 7)),
+            default_city=default_city,
+            last_city=last_city,
+            units=units,
+            theme=theme,
+            forecast_days=forecast_days,
             animated_current_icon=bool(data.get("animated_current_icon", False)),
             location_prompted=bool(data.get("location_prompted", False)),
             use_detected_on_start=bool(data.get("use_detected_on_start", False)),
             ask_detected_on_start=bool(data.get("ask_detected_on_start", True)),
         )
+   
