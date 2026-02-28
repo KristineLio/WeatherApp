@@ -11,10 +11,13 @@ This file intentionally keeps two tests:
         -the resulting HourlySeries is internally consistent 
          (all lists same length), build_day() still works
 """
+import pytest
 
 from weather_app.services.openmeteo import WeatherService
 from weather_app.domain.settings import Units
 from weather_app.domain.modes import HourlyMode
+
+pytestmark = pytest.mark.contract
 
 
 class StubWeatherService(WeatherService):

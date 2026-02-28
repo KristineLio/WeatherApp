@@ -3,6 +3,7 @@ from pathlib import Path
 
 from weather_app.services.storage import StorageRepo
 
+#Pure unit behavior (add_favorite, remove_favorite, clear_history,limit ordering logic)
 
 def test_favorites_add_list_is_favorite_remove(tmp_path: Path):
     db = tmp_path / "test.db"
@@ -64,3 +65,4 @@ def test_history_clear(tmp_path: Path):
 
     repo.clear_history()
     assert repo.list_history(limit=20) == []
+

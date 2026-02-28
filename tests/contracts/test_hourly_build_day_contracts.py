@@ -4,9 +4,13 @@
  wrong lengths, pivot bugs — across future refactors.
  shape invariants + no-crash across all modes + pivot “sane”"""
 
+
+import pytest
+
 from weather_app.domain.models import HourlySeries
 from weather_app.domain.modes import HourlyMode
 
+pytestmark = pytest.mark.contract
 
 def _series_sample() -> HourlySeries:
     # A small but representative dataset (same date, consecutive-ish hours)

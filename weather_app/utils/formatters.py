@@ -41,3 +41,10 @@ def time_hhmm_from_iso(dt_iso: str | None) -> str:
         return dt.datetime.fromisoformat(dt_iso).strftime("%H:%M")
     except Exception:
         return ""
+
+def format_d_m_hhmm(iso: str) -> str:
+    try:
+        t = dt.datetime.fromisoformat((iso or "").strip())
+        return t.strftime("%d %b %H:%M")
+    except Exception:
+        return (iso or "").strip() or "—"

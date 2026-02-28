@@ -2,8 +2,11 @@
 (both peak_temp and target-hour fallback), 
 plus a “no crash on empty/missing date” guard."""
 
+import pytest
+
 from weather_app.domain.models import HourlySeries
 
+pytestmark = pytest.mark.contract
 
 def _series_sample() -> HourlySeries:
     # Two days, with multiple hours on day 1 so peak temp selection is meaningful

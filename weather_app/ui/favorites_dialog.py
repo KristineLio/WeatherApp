@@ -5,6 +5,7 @@ import datetime as dt
 import wx
 
 from weather_app.services.storage import StorageRepo
+from weather_app.utils.formatters import format_d_m_hhmm
 
 
 class FavoritesDialog(wx.Dialog):
@@ -124,13 +125,6 @@ class FavoritesDialog(wx.Dialog):
     # -----------------
     # Helpers
     # -----------------
-    def _format_time(self, iso: str) -> str:
-        try:
-            t = dt.datetime.fromisoformat((iso or "").strip())
-            return t.strftime("%d %b %H:%M")
-        except Exception:
-            return (iso or "").strip() or "—"
-
     def _clear_hist_selection(self) -> None:
         """Unselect any selected row in the ListCtrl."""
         i = self.hist_list.GetFirstSelected()
@@ -157,7 +151,7 @@ class FavoritesDialog(wx.Dialog):
         self.hist_list.DeleteAllItems()
         for i, h in enumerate(self._hist_rows):
             row_idx = self.hist_list.InsertItem(i, h.city)
-            self.hist_list.SetItem(row_idx, 1, self._format_time(h.searched_at))
+            self.hist_list.SetItem(row_idx, 1, format_d_m_hhmm(h.searched_at))
 
     def _update_buttons(self) -> None:
         fav_sel = (self.fav_list.GetSelection() != wx.NOT_FOUND)

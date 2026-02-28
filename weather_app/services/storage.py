@@ -53,8 +53,13 @@ class StorageRepo:
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path)
         con.row_factory = sqlite3.Row
-        # safer concurrency for desktop apps
-        con.execute("PRAGMA journal_mode=WAL;")
+
+        try:
+            con.execute("PRAGMA journal_mode=WAL;")
+        except sqlite3.OperationalError:
+            # Fallback for environments where WAL files can't be created/locked
+            con.execute("PRAGMA journal_mode=DELETE;")
+
         con.execute("PRAGMA foreign_keys=ON;")
         return con
 
