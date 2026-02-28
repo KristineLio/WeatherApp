@@ -9,6 +9,7 @@ import wx.lib.scrolledpanel as scrolled
 
 from weather_app.services.openmeteo import WeatherService
 from weather_app.services.settings_store import SettingsStore
+from weather_app.services.storage import StorageRepo
 
 from weather_app.utils.paths import PNG_DIR
 from weather_app.utils.icons import get_icon_bitmap, get_anim
@@ -23,6 +24,7 @@ from weather_app.ui.hour_tile import HourTile
 from weather_app.ui.theme import pick_card_bg, get_palette
 
 from weather_app.ui.settings_dialog import SettingsDialog
+from weather_app.ui.favorites_dialog import FavoritesDialog
 
 
 
@@ -34,6 +36,9 @@ class WeatherApp(wx.Frame):
 
         self.settings_store = SettingsStore()
         self.settings = self.settings_store.load()
+
+        self.storage = StorageRepo()
+        logger.info("DB path: %s", self.storage.db_path)
 
         self._user_started_searching = False
 
@@ -300,6 +305,15 @@ class WeatherApp(wx.Frame):
         self.search_btn.SetBackgroundColour(self.COL_TOPBAR)
         self.search_btn.Bind(wx.EVT_BUTTON, self._on_get_weather)
 
+        # favorites button (☆ / ★)
+        self.fav_btn = wx.Button(top_bar, label="☆", style=wx.BU_EXACTFIT)
+        self.fav_btn.SetMinSize((36, 32))
+        self.fav_btn.SetBackgroundColour(self.COL_TOPBAR)
+        self.fav_btn.SetForegroundColour(self.COL_TEXT_LIGHT)
+        self.fav_btn.SetToolTip("Favorites & History (shift-click: open dialog)")
+        self.fav_btn.Bind(wx.EVT_BUTTON, self._on_star_click)
+
+
         # settings button (uses built-in art, no asset needed)
         gear_bmp = wx.ArtProvider.GetBitmap(wx.ART_HELP_SETTINGS, wx.ART_BUTTON, (24, 24))
         self.settings_btn = wx.BitmapButton(top_bar, bitmap=gear_bmp, style=wx.NO_BORDER)
@@ -307,12 +321,96 @@ class WeatherApp(wx.Frame):
         self.settings_btn.SetToolTip("Settings")
         self.settings_btn.Bind(wx.EVT_BUTTON, self._on_open_settings)
 
+
         s.Add(self.location, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
         s.Add(self.search_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
+        s.Add(self.fav_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
         s.Add(self.settings_btn, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
 
         top_bar.SetSizer(s)
         return top_bar
+    
+    def _on_star_click(self, event: wx.CommandEvent) -> None:
+            # Shift+click opens the dialog
+            if wx.GetKeyState(wx.WXK_SHIFT):
+                self._on_open_favorites(event)
+                return
+            # normal click toggles favorite
+            self._toggle_favorite_for_current()
+    
+    def _current_city_for_star(self) -> str:
+        # Prefer resolved city from loaded data
+        if self.data and getattr(self.data, "current", None) and getattr(self.data.current, "city", ""):
+            return (self.data.current.city or "").strip()
+        return (self.location.GetValue() or "").strip()
+
+
+    def _set_star_state(self, filled: bool) -> None:
+        if not hasattr(self, "fav_btn"):
+            return
+        self.fav_btn.SetLabel("★" if filled else "☆")
+        self.fav_btn.Refresh()
+
+
+    def _refresh_star_state(self) -> None:
+        city = self._current_city_for_star()
+        if not city:
+            self._set_star_state(False)
+            return
+        try:
+            self._set_star_state(self.storage.is_favorite(city))
+        except Exception:
+            # Never let DB issues break UI
+            self._set_star_state(False)
+    
+    def _parse_country_from_display_city(self, display_city: str) -> str | None:
+        # "Sofia, Bulgaria" or "Sofia, BG" -> "Bulgaria"/"BG"
+        s = (display_city or "").strip()
+        if "," not in s:
+            return None
+        return s.split(",")[-1].strip() or None
+
+
+    def _current_display_city(self) -> str:
+        # prefer the resolved display from WeatherData if present
+        if self.data and self.data.current and self.data.current.city:
+            return self.data.current.city
+        # fallback to what user typed
+        return (self.location.GetValue() or "").strip()
+
+
+    def _on_open_favorites(self, event: wx.CommandEvent) -> None:
+        dlg = FavoritesDialog(self, self.storage,on_changed=self._refresh_star_state)
+        try:
+            res = dlg.ShowModal()
+            if res != wx.ID_OK:
+                return
+            city = dlg.get_selected_city()
+            if not city:
+                return
+            self.location.SetValue(city)
+            self.settings.last_city = city
+            self.settings_store.save(self.settings)
+            self._on_get_weather(mark_user=False)
+        finally:
+            dlg.Destroy()
+
+
+    def _toggle_favorite_for_current(self) -> None:
+        city = self._current_city_for_star()
+        if not city:
+            return
+
+        try:
+            if self.storage.is_favorite(city):
+                self.storage.remove_favorite(city)
+            else:
+                lat = getattr(self.data, "lat", None) if self.data else None
+                lon = getattr(self.data, "lon", None) if self.data else None
+                country = city.split(",")[-1].strip() if "," in city else None
+                self.storage.add_favorite(city=city, lat=lat, lon=lon, country=country)
+        finally:
+            self._refresh_star_state()
     
     def _on_open_settings(self, event: wx.CommandEvent) -> None:
         dlg = SettingsDialog(self, self.settings)
@@ -1158,13 +1256,23 @@ class WeatherApp(wx.Frame):
     def update_ui(self, data: WeatherData):
         """Apply freshly fetched weather data to all UI sections."""
         self.Freeze()
+        
         try:
             # store latest data
             self.data = data
 
+            # record search history on success
+            try:
+                city = (data.current.city or "").strip()
+                if city:
+                    self.storage.add_history(city=city, lat=data.lat, lon=data.lon)
+            except Exception:
+                logger.exception("Failed to write search history")
+
             today_iso = data.current.date_iso
             self.selected_date = today_iso  #default selection to today
 
+            self._refresh_star_state()
             self._update_current_block(data)
             self._rebuild_forecast_cards(data.daily)
             
