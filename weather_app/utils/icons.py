@@ -78,7 +78,6 @@ def get_anim(filename: str) -> wx.adv.Animation:
 
 
 def icon_for_current_static(panel: wx.Window, icon_file: str) -> wx.Control:
-    # matches what you already do: StaticBitmap
     return wx.StaticBitmap(panel, bitmap=get_icon_bitmap(icon_file, size=(60, 60)))
 
 def icon_for_current_animated(panel: wx.Window, gif_file: str) -> wx.Control:

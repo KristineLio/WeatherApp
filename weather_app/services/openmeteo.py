@@ -5,6 +5,7 @@ import threading
 from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
 from weather_app.utils.formatters import weekday_from_iso
 from weather_app.domain.settings import Units
+from weather_app.services.errors import NetworkError, ProviderError
 
 GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -106,7 +107,7 @@ class WeatherService:
         logger.info("Fetch weather start city=%r", city)
         try:
             lat, lon, resolved_name, country = self._geocode_city(city)
-            logger.info("Geocoded city=%r -> lat=%s lon=%s resolved=%r country=%r", city, lat, lon, resolved_name, country)
+            #logger.info("Geocoded city=%r -> lat=%s lon=%s resolved=%r country=%r", city, lat, lon, resolved_name, country)
 
             params = {
                 "latitude": lat,
@@ -135,12 +136,11 @@ class WeatherService:
             hourly = forecast.get("hourly") or {}
 
             if "time" not in current:
-                raise RuntimeError("Unexpected API response: missing current time.")
+                raise ProviderError("Weather service returned an unexpected response (missing current time).")
             if "time" not in daily or "time" not in hourly:
-                raise RuntimeError("Unexpected API response: missing daily/hourly time arrays.")
+                raise ProviderError("Weather service returned an unexpected response (missing daily/hourly time arrays).")
 
             days = self._parse_daily(daily)
-            logger.info("Daily forecast points received: %s", len(days))
 
             current_time_iso = current.get("time")
             current_date_iso = current_time_iso.split("T")[0] if current_time_iso else None
@@ -182,10 +182,25 @@ class WeatherService:
                 city, units, forecast_days, self._cache_ttl_s
             )
             self._cache_set(key, wd)
+            logger.info("Fetch weather success city=%r resolved=%r lat=%s lon=%s", city, wd.current.city, lat, lon)
             return wd
-        except Exception as e:
-            logger.warning("Fetch weather failed city=%r err=%s", city, e)
+        
+        except ValueError:
+            # user input / city not found
             raise
+
+        except RuntimeError as e:
+            # _get_json already raises RuntimeError for network/provider errors.
+            # Re-map them into typed exceptions for UI logic.
+            msg = str(e)
+            if msg.startswith("Network"):
+                raise NetworkError(msg) from e
+            raise ProviderError(msg) from e
+
+        except Exception as e:
+            # Any bug / parsing surprise -> ProviderError (consistent for UI)
+            logger.exception("Unexpected service error city=%r", city)
+            raise ProviderError("Weather service failed while processing data.") from e
 
 
     # ---------- internal helpers ----------
