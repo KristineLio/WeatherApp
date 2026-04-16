@@ -37,10 +37,6 @@ def build_current_weather_view_data(
     snapshot: CurrentSnapshot | None = None,
     now_dt: dt.datetime | None = None,
 ) -> CurrentWeatherViewData:
-    """
-    Convert WeatherData/current snapshot into plain text/icon view data
-    for the current hero panel.
-    """
     cur: CurrentSnapshot = snapshot or data.current
     now_dt = now_dt or dt.datetime.now()
 
@@ -76,7 +72,7 @@ def build_current_weather_view_data(
         city_text=cur.city or "",
         icon_png=icon_png,
         icon_gif=icon_gif,
-        feels_text="Feels like " + format_value(HourlyMode.TEMPERATURE, cur.feels_like, units),
+        feels_text=_build_metric_line(HourlyMode.FEELS_LIKE, cur.feels_like, units),
         precip_text=_build_metric_line(HourlyMode.PRECIPITATION, cur.precip, units),
         humidity_text=_build_metric_line(HourlyMode.HUMIDITY, cur.humidity, units),
         wind_text=_build_metric_line(HourlyMode.WIND, cur.wind, units),

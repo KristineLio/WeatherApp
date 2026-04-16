@@ -11,7 +11,7 @@ from weather_app.utils.icon_logic import (
     WIND_ICONS,
     HUMIDITY_ICONS,
 )
-from weather_app.domain.settings import Units 
+from weather_app.domain.settings import Units
 
 if TYPE_CHECKING:
     from weather_app.domain.models import HourlySeries, CurrentSnapshot
@@ -23,6 +23,7 @@ Value: TypeAlias = float | int | None
 class HourlyMode(Enum):
     """Weather metric display modes."""
     TEMPERATURE = "temperature"
+    FEELS_LIKE = "feels_like"
     PRECIPITATION = "precip"
     WIND = "wind"
     HUMIDITY = "humidity"
@@ -32,15 +33,12 @@ class HourlyMode(Enum):
 class ModeMeta:
     """Metadata for a weather metric display mode."""
     tab_label: str
-    fmt: Callable[[Value, Units], str]                     # (value, units) -> string (incl. unit)
-    icon: Callable[[Value, int | None, bool], str]         # (value, code, night) -> filename
-    values: Callable[["HourlySeries"], list[Value]]        # HourlySeries -> list of values
-    current_value: Callable[["CurrentSnapshot"], Value]    # CurrentSnapshot -> metric value
+    fmt: Callable[[Value, Units], str]
+    icon: Callable[[Value, int | None, bool], str]
+    values: Callable[["HourlySeries"], list[Value]]
+    current_value: Callable[["CurrentSnapshot"], Value]
 
 
-# ----------------------------
-# Formatters (return FULL string)
-# ----------------------------
 def _fmt_temp(v: Value, units: Units) -> str:
     if v is None:
         return "—"
@@ -57,9 +55,6 @@ def _fmt_percent(v: Value, units: Units) -> str:
     return f"{int(v)}%" if v is not None else "—"
 
 
-# ----------------------------
-# Icons (unchanged behavior)
-# ----------------------------
 def _icon_temp(v: Value, code: int | None, night: bool) -> str:
     return code_to_label_icon(code or 0, night=night)[1] if code is not None else "unknown.png"
 
@@ -79,9 +74,6 @@ def _icon_humidity(v: Value, code: int | None, night: bool) -> str:
     return pick_icon_by_threshold(vv, HUMIDITY_ICONS, "hum_unknown.png")
 
 
-# ----------------------------
-# MODE_META table
-# ----------------------------
 MODE_META: dict[HourlyMode, ModeMeta] = {
     HourlyMode.TEMPERATURE: ModeMeta(
         tab_label="Temperature",
@@ -90,23 +82,30 @@ MODE_META: dict[HourlyMode, ModeMeta] = {
         values=lambda s: s.temp,
         current_value=lambda cur: cur.temp,
     ),
+    HourlyMode.FEELS_LIKE: ModeMeta(
+        tab_label="Feels like",
+        fmt=_fmt_temp,
+        icon=_icon_temp,
+        values=lambda s: s.feels_like,
+        current_value=lambda cur: cur.feels_like,
+    ),
     HourlyMode.PRECIPITATION: ModeMeta(
         tab_label="Precipitation",
-        fmt=_fmt_percent,  # returns "34%"
+        fmt=_fmt_percent,
         icon=_icon_precip,
         values=lambda s: s.precip,
         current_value=lambda cur: cur.precip,
     ),
     HourlyMode.WIND: ModeMeta(
         tab_label="Wind",
-        fmt=_fmt_wind,     # returns "12 km/h" or "8 mph"
+        fmt=_fmt_wind,
         icon=_icon_wind,
         values=lambda s: s.wind,
         current_value=lambda cur: cur.wind,
     ),
     HourlyMode.HUMIDITY: ModeMeta(
         tab_label="Humidity",
-        fmt=_fmt_percent,  # returns "51%"
+        fmt=_fmt_percent,
         icon=_icon_humidity,
         values=lambda s: s.humidity,
         current_value=lambda cur: cur.humidity,
@@ -126,8 +125,3 @@ def format_value(mode: HourlyMode, value: Value, units: Units) -> str:
 
 def icon_for(mode: HourlyMode, value: Value, code: int | None, *, night: bool = False) -> str:
     return get_mode_meta(mode).icon(value, code, night)
-
-
-
-
-

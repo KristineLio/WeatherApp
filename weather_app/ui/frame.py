@@ -27,6 +27,13 @@ from weather_app.utils.paths import PNG_DIR
 
 logger = logging.getLogger(__name__)
 
+VISIBLE_HOURLY_MODES = (
+    HourlyMode.TEMPERATURE,
+    HourlyMode.PRECIPITATION,
+    HourlyMode.WIND,
+    HourlyMode.HUMIDITY,
+)
+
 
 class WeatherApp(wx.Frame):
     def __init__(self, parent, title):
@@ -503,7 +510,7 @@ class WeatherApp(wx.Frame):
 
         self.mode_buttons: dict[HourlyMode, wx.ToggleButton] = {}
 
-        for mode_key in HourlyMode:
+        for mode_key in VISIBLE_HOURLY_MODES:
             meta = get_mode_meta(mode_key)
             btn = wx.ToggleButton(tabs_panel, label=meta.tab_label)
             self.mode_buttons[mode_key] = btn
