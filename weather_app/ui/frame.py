@@ -9,10 +9,11 @@ import wx.lib.scrolledpanel as scrolled
 
 from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
 from weather_app.domain.modes import HourlyMode, DEFAULT_MODE, get_mode_meta
-from weather_app.services.errors import NetworkError, ProviderError
+from weather_app.services.errors import NetworkError, ProviderError, is_retryable_error
 from weather_app.services.openmeteo import WeatherService
 from weather_app.services.settings_store import SettingsStore
 from weather_app.services.storage import StorageRepo
+from weather_app.ui.request_state import RequestState
 from weather_app.ui.current_weather_panel import CurrentWeatherPanel
 from weather_app.ui.current_weather_presenter import build_current_weather_view_data
 from weather_app.ui.hour_tile import HourTile
@@ -48,9 +49,7 @@ class WeatherApp(wx.Frame):
         self.selected_date: str | None = None
         self.hourly_mode: HourlyMode = HourlyMode.TEMPERATURE
 
-        self._req_seq = 0
-        self._active_req = 0
-        self._reconnect_seconds = 0
+        self.request_state = RequestState()
 
         self._init_ui()
         self.Centre()
@@ -153,19 +152,16 @@ class WeatherApp(wx.Frame):
 
     def _schedule_refetch(self, city: str, *, failed_req_id: int, delay_ms: int = 20000) -> None:
         seconds = delay_ms // 1000
-
-        self._start_reconnect_countdown(
-            failed_req_id=failed_req_id,
-            seconds=seconds,
-        )
+        self._start_reconnect_countdown(failed_req_id=failed_req_id, seconds=seconds)
 
         def retry():
-            if not self._is_latest(failed_req_id):
-                self._hide_reconnect_status()
-                return
-
             current_city = self.location.GetValue().strip()
-            if current_city.lower() != city.strip().lower():
+
+            if not self.request_state.should_retry_city(
+                failed_req_id=failed_req_id,
+                requested_city=city,
+                current_city=current_city,
+            ):
                 self._hide_reconnect_status()
                 return
 
@@ -469,10 +465,11 @@ class WeatherApp(wx.Frame):
         return self.current_panel
 
     def _show_reconnect_status(self, seconds: int) -> None:
-        self._reconnect_seconds = seconds
-        self.current_panel.show_reconnect_status(seconds)
+        self.request_state.start_reconnect(seconds)
+        self.current_panel.show_reconnect_status(self.request_state.reconnect_seconds)
 
     def _hide_reconnect_status(self) -> None:
+        self.request_state.clear_reconnect()
         self.current_panel.hide_reconnect_status()
 
     def _start_reconnect_countdown(self, *, failed_req_id: int, seconds: int) -> None:
@@ -483,11 +480,11 @@ class WeatherApp(wx.Frame):
                 self._hide_reconnect_status()
                 return
 
-            self._reconnect_seconds -= 1
-            if self._reconnect_seconds <= 0:
+            remaining = self.request_state.tick_reconnect()
+            if remaining <= 0:
                 return
 
-            self.current_panel.update_reconnect_status(self._reconnect_seconds)
+            self.current_panel.update_reconnect_status(remaining)
             wx.CallLater(1000, tick)
 
         wx.CallLater(1000, tick)
@@ -567,12 +564,10 @@ class WeatherApp(wx.Frame):
             self.tabs_panel.Disable() if is_loading else self.tabs_panel.Enable()
 
     def _next_request_id(self) -> int:
-        self._req_seq += 1
-        self._active_req = self._req_seq
-        return self._active_req
+        return self.request_state.begin_request()
 
     def _is_latest(self, req_id: int) -> bool:
-        return req_id == self._active_req
+        return self.request_state.is_latest(req_id)
 
     def _call_after_if_latest(self, req_id: int, fn, *args, **kwargs):
         def runner():
@@ -627,19 +622,21 @@ class WeatherApp(wx.Frame):
                 logger.warning("Worker input error req_id=%s city=%r err=%s", local_req_id, local_city, e)
                 self._call_after_if_latest(local_req_id, self.show_error, str(e))
 
-            except NetworkError as e:
-                logger.info("Scheduling auto-refetch due to network error city=%r", local_city)
-                self._call_after_if_latest(
-                    local_req_id,
-                    self._schedule_refetch,
-                    local_city,
-                    failed_req_id=local_req_id,
-                )
-                logger.error("Worker network error req_id=%s city=%r err=%s", local_req_id, local_city, e)
-                self._call_after_if_latest(local_req_id, self.show_error, str(e))
+            except (NetworkError, ProviderError) as e:
+                if is_retryable_error(e):
+                    logger.info("Scheduling auto-refetch due to retryable error city=%r", local_city)
+                    self._call_after_if_latest(
+                        local_req_id,
+                        self._schedule_refetch,
+                        local_city,
+                        failed_req_id=local_req_id,
+                    )
+                else:
+                    logger.error(
+                        "Worker provider error req_id=%s city=%r err=%s",
+                        local_req_id, local_city, e
+                    )
 
-            except ProviderError as e:
-                logger.error("Worker provider error req_id=%s city=%r err=%s", local_req_id, local_city, e)
                 self._call_after_if_latest(local_req_id, self.show_error, str(e))
 
             finally:

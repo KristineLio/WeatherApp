@@ -126,30 +126,37 @@ class CurrentWeatherPanel(wx.Panel):
 
         self.SetSizer(root)
 
+    def _replace_icon_ctrl(self, ctrl: wx.Window) -> None:
+        if self.current_icon_ctrl is not None:
+            self.current_icon_ctrl.Destroy()
+
+        self.icon_host_sizer.Clear(delete_windows=False)
+        self.current_icon_ctrl = ctrl
+        self.icon_host_sizer.Add(ctrl, 0, wx.ALIGN_LEFT)
+        self.icon_host.Layout()
+
+    def _show_loading_animation(self) -> None:
+        ctrl = wx.adv.AnimationCtrl(self.icon_host)
+        ctrl.SetAnimation(get_anim("loading.gif"))
+        ctrl.Play()
+        self._replace_icon_ctrl(ctrl)
+
     def _set_current_icon(self, *, icon_png: str, icon_gif: str | None = None) -> None:
         want_anim = bool(self._animated_current_icon)
         is_anim = isinstance(self.current_icon_ctrl, wx.adv.AnimationCtrl)
 
         if want_anim != is_anim:
-            if self.current_icon_ctrl is not None:
-                self.current_icon_ctrl.Destroy()
-
-            self.icon_host_sizer.Clear(delete_windows=False)
-
             if want_anim:
                 ctrl = wx.adv.AnimationCtrl(self.icon_host)
-                anim = get_anim(icon_gif or "unknown.gif")
-                ctrl.SetAnimation(anim)
+                ctrl.SetAnimation(get_anim(icon_gif or "unknown.gif"))
                 ctrl.Play()
-                self.current_icon_ctrl = ctrl
+                self._replace_icon_ctrl(ctrl)
             else:
-                self.current_icon_ctrl = wx.StaticBitmap(
+                ctrl = wx.StaticBitmap(
                     self.icon_host,
                     bitmap=get_icon_bitmap(icon_png, size=(60, 60)),
                 )
-
-            self.icon_host_sizer.Add(self.current_icon_ctrl, 0, wx.ALIGN_LEFT)
-            self.icon_host.Layout()
+                self._replace_icon_ctrl(ctrl)
             return
 
         if want_anim and isinstance(self.current_icon_ctrl, wx.adv.AnimationCtrl):
@@ -171,12 +178,13 @@ class CurrentWeatherPanel(wx.Panel):
         self.humidity_label.SetLabel(view.humidity_text)
         self.wind_label.SetLabel(view.wind_text)
 
+        self.desc_label.SetForegroundColour(self._text_color)
         self.status_label.Hide()
         self._set_current_icon(icon_png=view.icon_png, icon_gif=view.icon_gif)
 
         self.Layout()
         self.Refresh()
-    
+
     def _set_metric_placeholders(self) -> None:
         self.feels_label.SetLabel("Feels like —")
         self.precip_label.SetLabel("Precipitation: —")
@@ -186,20 +194,23 @@ class CurrentWeatherPanel(wx.Panel):
     def set_loading(self, is_loading: bool, *, city: str = "") -> None:
         if is_loading:
             self.status_label.Hide()
-            self.temp_label.SetLabel("Loading…")
-            self.desc_label.SetLabel("")
+            self.now_label.SetLabel("Now")
+            self.temp_label.SetLabel("")
+            self.desc_label.SetForegroundColour(self._text_color)
+            self.desc_label.SetLabel("Fetching weather data…")
             self.city_label.SetLabel(city or "")
 
             self._set_metric_placeholders()
-            self._set_current_icon(icon_png="unknown.png", icon_gif="unknown.gif")
+            self._show_loading_animation()
 
         self.Layout()
         self.Refresh()
-    
+
     def set_error(self, msg: str, *, city: str = "") -> None:
         self.status_label.Hide()
 
         self.temp_label.SetLabel("—")
+        self.desc_label.SetForegroundColour(self._text_color)
         self.desc_label.SetLabel(msg)
         self.city_label.SetLabel(city or "")
 
@@ -209,19 +220,28 @@ class CurrentWeatherPanel(wx.Panel):
         self.Layout()
         self.Refresh()
 
-    
     def show_reconnect_status(self, seconds: int) -> None:
-        self.status_label.SetLabel(f"Reconnecting… will retry automatically in {seconds}s")
+        self._show_loading_animation()
+
+        self.temp_label.SetLabel("")
+        self.desc_label.SetForegroundColour(self._muted_text_color)
+        self.desc_label.SetLabel("Connection lost")
+
+        self.status_label.SetLabel(f"Retrying automatically in {seconds}s")
         self.status_label.Show()
+
         self.Layout()
+        self.Refresh()
 
     def update_reconnect_status(self, seconds: int) -> None:
-        self.status_label.SetLabel(f"Reconnecting… will retry automatically in {seconds}s")
+        self.status_label.SetLabel(f"Retrying automatically in {seconds}s")
         self.Layout()
+        self.Refresh()
 
     def hide_reconnect_status(self) -> None:
         self.status_label.Hide()
         self.Layout()
+        self.Refresh()
 
     def set_animated_enabled(self, enabled: bool) -> None:
         self._animated_current_icon = enabled
