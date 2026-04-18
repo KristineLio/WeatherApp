@@ -171,8 +171,9 @@ class WeatherApp(wx.Frame):
             ):
                 self._hide_reconnect_status()
                 return
-
+    
             if not self.search_btn.IsEnabled():
+                self._hide_reconnect_status()
                 return
 
             self._hide_reconnect_status()
