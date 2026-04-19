@@ -11,7 +11,12 @@ GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _GEO_TIMEOUT = 7
 _FORECAST_TIMEOUT = 10
+
+_MAX_HTTP_ATTEMPTS = 3
+_RETRY_BACKOFF_S = 0.6
+
 logger = logging.getLogger(__name__)
+
 # ============================================================================
 # Weather Service
 # ============================================================================
@@ -69,7 +74,6 @@ class WeatherService:
         with self._cache_lock:
             self._cache[key] = (time.time(), data)
 
-
     # ---------- public API ----------
 
     def detect_city(self) -> str | None:
@@ -88,7 +92,7 @@ class WeatherService:
     def fetch(self, city: str, *, units: Units = Units.METRIC, forecast_days: int = 7,) -> WeatherData:
         """
         Fetch weather for a city and return a fully built WeatherData domain object.
-        Raises RuntimeError / ValueError with user-friendly messages.
+        Raises typed service exceptions for network/provider failures.
         """
         key = self._cache_key(city, units, forecast_days)
         t0 = time.perf_counter()
@@ -101,13 +105,12 @@ class WeatherService:
             )
             return cached
         logger.debug("Cache MISS city=%r units=%s days=%s", city, units, forecast_days)
-       
 
         city = (city or "").strip() or "Sofia"
         logger.info("Fetch weather start city=%r", city)
+
         try:
             lat, lon, resolved_name, country = self._geocode_city(city)
-            #logger.info("Geocoded city=%r -> lat=%s lon=%s resolved=%r country=%r", city, lat, lon, resolved_name, country)
 
             params = {
                 "latitude": lat,
@@ -129,7 +132,13 @@ class WeatherService:
                     "precipitation_unit": "inch",
                 })
 
-            forecast = self._get_json(self._forecast_url, params=params, timeout=self._forecast_timeout)
+            forecast = self._get_json(
+                self._forecast_url,
+                params=params,
+                timeout=self._forecast_timeout,
+                attempts=_MAX_HTTP_ATTEMPTS,
+                backoff_s=_RETRY_BACKOFF_S,
+            )
 
             current = forecast.get("current_weather") or {}
             daily = forecast.get("daily") or {}
@@ -172,67 +181,164 @@ class WeatherService:
                 lon=lon,
             )
 
-            logger.info(
-                "Fetch weather success city=%r resolved=%r lat=%s lon=%s",
-                city, wd.current.city, lat, lon
-            )
-
             logger.debug(
                 "Cache STORE city=%r units=%s days=%s ttl=%ss",
                 city, units, forecast_days, self._cache_ttl_s
             )
             self._cache_set(key, wd)
-            logger.info("Fetch weather success city=%r resolved=%r lat=%s lon=%s", city, wd.current.city, lat, lon)
+
+            logger.info(
+                "Fetch weather success city=%r resolved=%r lat=%s lon=%s",
+                city, wd.current.city, lat, lon
+            )
             return wd
-        
+
         except ValueError:
             # user input / city not found
             raise
 
-        except RuntimeError as e:
-            # _get_json already raises RuntimeError for network/provider errors.
-            # Re-map them into typed exceptions for UI logic.
-            msg = str(e)
-            if msg.startswith("Network"):
-                raise NetworkError(msg) from e
-            raise ProviderError(msg) from e
+        except (NetworkError, ProviderError):
+            raise
 
         except Exception as e:
             # Any bug / parsing surprise -> ProviderError (consistent for UI)
             logger.exception("Unexpected service error city=%r", city)
             raise ProviderError("Weather service failed while processing data.") from e
 
-
     # ---------- internal helpers ----------
 
-    def _get_json(self, url: str, *, params: dict | None = None, timeout: int = 10) -> dict:
-        """HTTP GET → JSON with consistent errors."""
+    def _get_json(
+        self,
+        url: str,
+        *,
+        params: dict | None = None,
+        timeout: int = 10,
+        attempts: int = 3,
+        backoff_s: float = 0.6,
+    ) -> dict:
+        """
+        HTTP GET -> JSON with typed exceptions and limited retry/backoff.
+
+        Retries only for transient failures:
+        - Timeout
+        - RequestException (DNS / connection reset / etc.)
+        - HTTP 429
+        - HTTP 5xx
+
+        Does NOT retry:
+        - HTTP 4xx other than 429
+        - invalid JSON
+        """
         endpoint = url.rstrip("/").split("/")[-1]
+        params = params or {}
+        safe_params = {k: v for k, v in params.items() if k not in {"hourly", "daily"}}
+        max_attempts = max(1, min(int(attempts), 3))
 
-        try:
-            safe_params = {k: v for k, v in params.items() if k not in {"hourly", "daily"}}
-            logger.debug("HTTP GET endpoint=%s url=%s params=%s timeout=%s", endpoint, url, safe_params, timeout)
-            r = self._session.get(url, params=params, timeout=timeout)
-            r.raise_for_status()
-            return r.json()
+        for attempt in range(1, max_attempts + 1):
+            try:
+                logger.debug(
+                    "HTTP GET attempt=%s/%s endpoint=%s url=%s params=%s timeout=%s",
+                    attempt,
+                    max_attempts,
+                    endpoint,
+                    url,
+                    safe_params,
+                    timeout,
+                )
 
-        except requests.exceptions.Timeout as e:
-            logger.warning("Timeout calling %s params=%s timeout=%s", url, params, timeout)
-            raise RuntimeError("Network timeout while contacting weather service.") from e
+                r = self._session.get(url, params=params, timeout=timeout)
 
-        except requests.exceptions.HTTPError as e:
-            status = getattr(e.response, "status_code", "unknown")
-            logger.warning("HTTP error calling %s (HTTP %s) params=%s", url, status, params)
-            raise RuntimeError(f"Weather service error (HTTP {status}).") from e
+                # Retry only 429 + 5xx
+                if r.status_code == 429 or 500 <= r.status_code <= 599:
+                    if attempt < max_attempts:
+                        delay = backoff_s * (2 ** (attempt - 1))
+                        logger.warning(
+                            "Retryable HTTP status endpoint=%s status=%s attempt=%s/%s sleeping=%.2fs",
+                            endpoint,
+                            r.status_code,
+                            attempt,
+                            max_attempts,
+                            delay,
+                        )
+                        time.sleep(delay)
+                        continue
 
-        except ValueError as e:
-            logger.warning("Invalid JSON from %s params=%s err=%s", url, params, e)
-            raise RuntimeError("Weather service returned invalid JSON.") from e
+                    logger.warning(
+                        "Retryable HTTP error endpoint=%s status=%s params=%s",
+                        endpoint,
+                        r.status_code,
+                        safe_params,
+                    )
+                    raise NetworkError(f"Weather service temporarily unavailable (HTTP {r.status_code}).")
 
-        except requests.RequestException as e:
-            # includes DNS failures like getaddrinfo and connection resets
-            logger.warning("Request error calling %s params=%s err=%s", url, params, e)
-            raise RuntimeError("Network error while contacting weather service.") from e
+                # Non-retryable HTTP errors (400/404/etc.)
+                r.raise_for_status()
+
+                try:
+                    return r.json()
+                except ValueError as e:
+                    logger.warning(
+                        "Invalid JSON endpoint=%s params=%s err=%s",
+                        endpoint,
+                        safe_params,
+                        e,
+                    )
+                    raise ProviderError("Weather service returned invalid JSON.") from e
+
+            except requests.exceptions.Timeout as e:
+                if attempt < max_attempts:
+                    delay = backoff_s * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Timeout endpoint=%s attempt=%s/%s sleeping=%.2fs",
+                        endpoint,
+                        attempt,
+                        max_attempts,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+
+                logger.warning(
+                    "Timeout endpoint=%s params=%s timeout=%s",
+                    endpoint,
+                    safe_params,
+                    timeout,
+                )
+                raise NetworkError("Network timeout while contacting weather service.") from e
+
+            except requests.exceptions.HTTPError as e:
+                status = getattr(e.response, "status_code", "unknown")
+                logger.warning(
+                    "HTTP error endpoint=%s status=%s params=%s",
+                    endpoint,
+                    status,
+                    safe_params,
+                )
+                raise ProviderError(f"Weather service error (HTTP {status}).") from e
+
+            except requests.RequestException as e:
+                if attempt < max_attempts:
+                    delay = backoff_s * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Request error endpoint=%s attempt=%s/%s err=%s sleeping=%.2fs",
+                        endpoint,
+                        attempt,
+                        max_attempts,
+                        e,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+
+                logger.warning(
+                    "Request error endpoint=%s params=%s err=%s",
+                    endpoint,
+                    safe_params,
+                    e,
+                )
+                raise NetworkError("Network error while contacting weather service.") from e
+
+        raise ProviderError("Weather service failed unexpectedly.")
 
     def _geocode_city(self, city: str) -> tuple[float, float, str, str]:
         """Return (lat, lon, resolved_name, country). Raise ValueError if not found."""
@@ -240,6 +346,8 @@ class WeatherService:
             self._geo_url,
             params={"name": city, "count": 1, "language": "en", "format": "json"},
             timeout=self._geo_timeout,
+            attempts=_MAX_HTTP_ATTEMPTS,
+            backoff_s=_RETRY_BACKOFF_S,
         )
         results = geo.get("results") or []
         if not results:
@@ -251,6 +359,7 @@ class WeatherService:
             r0.get("name", city),
             r0.get("country", ""),
         )
+
     def _parse_daily(self, daily: dict) -> list[DailyForecast]:
         times = daily.get("time") or []
         tmaxs = daily.get("temperature_2m_max") or []
@@ -279,4 +388,3 @@ class WeatherService:
                 )
             )
         return out
-   
