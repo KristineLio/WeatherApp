@@ -464,6 +464,9 @@ class WeatherApp(wx.Frame):
         self.Layout()
         self.Refresh()
 
+    def set_retry_callback(self, callback) -> None:
+        self.retry_btn.Bind(wx.EVT_BUTTON, lambda event: callback())
+
     def _build_current_panel(self, parent: wx.Window) -> wx.Panel:
         self.current_panel = CurrentWeatherPanel(
             parent,
@@ -476,7 +479,12 @@ class WeatherApp(wx.Frame):
             font_meta=self.FONT_META,
             animated_current_icon=getattr(self.settings, "animated_current_icon", False),
         )
+        self.current_panel.set_retry_callback(self._on_retry_click)
         return self.current_panel
+    
+    def _on_retry_click(self) -> None:
+        self._reset_auto_retry()
+        self._on_get_weather(mark_user=True, force=True)
 
     def _show_reconnect_status(self, seconds: int) -> None:
         self.request_state.start_reconnect(seconds)
@@ -688,7 +696,8 @@ class WeatherApp(wx.Frame):
                     self._call_after_if_latest(
                         local_req_id,
                         self.show_error,
-                        f"{e}\n\nAutomatic retry did not succeed.",
+                        f"{e}\n\nClick Retry to try again.",
+                        show_retry=True,
                     )
 
             except ProviderError as e:
@@ -706,10 +715,14 @@ class WeatherApp(wx.Frame):
 
         threading.Thread(target=work, args=(city, req_id), daemon=True).start()
 
-    def show_error(self, msg: str):
+    def show_error(self, msg: str, *, show_retry: bool = False):
         self._hide_reconnect_status()
         self._reset_auto_retry()
-        self.current_panel.set_error(msg, city=self._current_display_city())
+        self.current_panel.set_error(
+            msg,
+            city=self._current_display_city(),
+            show_retry=show_retry,
+        )
         wx.MessageBox(msg, "Weather App", wx.OK | wx.ICON_ERROR)
 
     def _update_current_block(self, data: WeatherData, *, snapshot: CurrentSnapshot | None = None):

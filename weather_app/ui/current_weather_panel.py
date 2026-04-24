@@ -96,6 +96,9 @@ class CurrentWeatherPanel(wx.Panel):
         )
         self.status_label.Hide()
 
+        self.retry_btn = wx.Button(self, label="Retry")
+        self.retry_btn.Hide()
+
         self.precip_label = self._build_metric_label("Precipitation: —")
         self.humidity_label = self._build_metric_label("Humidity: —")
         self.wind_label = self._build_metric_label("Wind: —")
@@ -109,6 +112,7 @@ class CurrentWeatherPanel(wx.Panel):
 
         right_col.Add(self.desc_label, 0, wx.EXPAND | wx.BOTTOM, 6)
         right_col.Add(self.status_label, 0, wx.EXPAND | wx.BOTTOM, 6)
+        right_col.Add(self.retry_btn, 0, wx.TOP | wx.BOTTOM, 4)
         right_col.Add(self.precip_label, 0, wx.EXPAND | wx.BOTTOM, 2)
         right_col.Add(self.humidity_label, 0, wx.EXPAND | wx.BOTTOM, 2)
         right_col.Add(self.wind_label, 0, wx.EXPAND | wx.BOTTOM, 2)
@@ -125,6 +129,9 @@ class CurrentWeatherPanel(wx.Panel):
         root.Add(bottom_row, 0, wx.EXPAND | wx.ALL, 10)
 
         self.SetSizer(root)
+
+    def set_retry_callback(self, callback) -> None:
+        self.retry_btn.Bind(wx.EVT_BUTTON, lambda event: callback())
 
     def _replace_icon_ctrl(self, ctrl: wx.Window) -> None:
         if self.current_icon_ctrl is not None:
@@ -180,6 +187,7 @@ class CurrentWeatherPanel(wx.Panel):
 
         self.desc_label.SetForegroundColour(self._text_color)
         self.status_label.Hide()
+        self.retry_btn.Hide()
         self._set_current_icon(icon_png=view.icon_png, icon_gif=view.icon_gif)
 
         self.Layout()
@@ -194,6 +202,7 @@ class CurrentWeatherPanel(wx.Panel):
     def set_loading(self, is_loading: bool, *, city: str = "") -> None:
         if is_loading:
             self.status_label.Hide()
+            self.retry_btn.Hide()
             self.now_label.SetLabel("Now")
             self.temp_label.SetLabel("")
             self.desc_label.SetForegroundColour(self._text_color)
@@ -206,8 +215,9 @@ class CurrentWeatherPanel(wx.Panel):
         self.Layout()
         self.Refresh()
 
-    def set_error(self, msg: str, *, city: str = "") -> None:
+    def set_error(self, msg: str, *, city: str = "", show_retry: bool = False) -> None:
         self.status_label.Hide()
+        self.retry_btn.Show(show_retry)
 
         self.temp_label.SetLabel("—")
         self.desc_label.SetForegroundColour(self._text_color)
@@ -227,23 +237,10 @@ class CurrentWeatherPanel(wx.Panel):
         self.desc_label.SetLabel("Reconnecting…")
         self.status_label.Show()
         self.status_label.SetLabel(f"Retrying automatically in {seconds}s")
+        self.retry_btn.Hide()
         self.Layout()
         self.Refresh()
         self.Update()
-    """
-     def show_reconnect_status(self, seconds: int) -> None:
-        self._show_loading_animation()
-
-        self.temp_label.SetLabel("")
-        self.desc_label.SetForegroundColour(self._muted_text_color)
-        self.desc_label.SetLabel("Connection lost")
-
-        self.status_label.SetLabel(f"Retrying automatically in {seconds}s")
-        self.status_label.Show()
-
-        self.Layout()
-        self.Refresh()
-    """
 
     def update_reconnect_status(self, seconds: int) -> None:
         self.status_label.SetLabel(f"Retrying automatically in {seconds}s")
