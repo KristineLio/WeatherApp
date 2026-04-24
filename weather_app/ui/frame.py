@@ -9,7 +9,7 @@ import wx.lib.scrolledpanel as scrolled
 
 from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
 from weather_app.domain.modes import HourlyMode, DEFAULT_MODE, get_mode_meta
-from weather_app.services.errors import NetworkError, ProviderError, is_retryable_error
+from weather_app.services.errors import NetworkError, ProviderError
 from weather_app.services.openmeteo import WeatherService
 from weather_app.services.settings_store import SettingsStore
 from weather_app.services.storage import StorageRepo
@@ -34,6 +34,8 @@ VISIBLE_HOURLY_MODES = (
     HourlyMode.HUMIDITY,
 )
 
+_MAX_UI_AUTO_RETRIES = 1
+
 
 class WeatherApp(wx.Frame):
     def __init__(self, parent, title):
@@ -57,6 +59,9 @@ class WeatherApp(wx.Frame):
         self.hourly_mode: HourlyMode = HourlyMode.TEMPERATURE
 
         self.request_state = RequestState()
+
+        self._auto_retry_city: str | None = None
+        self._auto_retry_count: int = 0
 
         self._init_ui()
         self.Centre()
@@ -171,14 +176,10 @@ class WeatherApp(wx.Frame):
             ):
                 self._hide_reconnect_status()
                 return
-    
-            if not self.search_btn.IsEnabled():
-                self._hide_reconnect_status()
-                return
 
             self._hide_reconnect_status()
             logger.info("Auto-refetch retry req_id=%s city=%r", failed_req_id, city)
-            self._on_get_weather(mark_user=False)
+            self._on_get_weather(mark_user=False, force=True)
 
         wx.CallLater(delay_ms, retry)
 
@@ -219,7 +220,7 @@ class WeatherApp(wx.Frame):
         self.FONT_TEMP = wx.Font(42, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
         self.FONT_DESC = wx.Font(15, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
         self.FONT_META = wx.Font(11, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
-    
+
     def _toolbar_bitmap(self, filename: str, size: tuple[int, int] = (24, 24)) -> wx.Bitmap:
         img = wx.Image(os.fspath(PNG_DIR / filename), wx.BITMAP_TYPE_PNG)
         img = img.Rescale(size[0], size[1], wx.IMAGE_QUALITY_HIGH)
@@ -246,7 +247,7 @@ class WeatherApp(wx.Frame):
         )
         self.search_btn.SetBackgroundColour(self.COL_TOPBAR)
         self.search_btn.Bind(wx.EVT_BUTTON, self._on_get_weather)
-        
+
         self._fav_empty_bmp = self._toolbar_bitmap("star_outline.png", size=(24, 24))
         self._fav_filled_bmp = self._toolbar_bitmap("star_filled.png", size=(24, 24))
         self.fav_btn = wx.BitmapButton(
@@ -275,7 +276,6 @@ class WeatherApp(wx.Frame):
 
         top_bar.SetSizer(s)
         return top_bar
-    
 
     def _on_star_click(self, event: wx.CommandEvent) -> None:
         self._toggle_favorite_for_current()
@@ -317,8 +317,14 @@ class WeatherApp(wx.Frame):
             else:
                 lat = getattr(self.data, "lat", None) if self.data else None
                 lon = getattr(self.data, "lon", None) if self.data else None
-                country = city.split(",")[-1].strip() if "," in city else None
-                self.storage.add_favorite(city=city, lat=lat, lon=lon, country=country)
+                country = getattr(self.data, "country", None) if self.data else None
+
+                self.storage.add_favorite(
+                    city=city,
+                    lat=lat,
+                    lon=lon,
+                    country=country,
+                )
         finally:
             self._refresh_star_state()
 
@@ -331,7 +337,7 @@ class WeatherApp(wx.Frame):
         self.settings.last_city = city
         self.settings_store.save(self.settings)
         self._on_get_weather(mark_user=False)
-    
+
     def _apply_settings_from_dialog(self, new_settings) -> None:
         old_settings = self.settings
         old_forecast = getattr(old_settings, "forecast_days", 7)
@@ -405,7 +411,7 @@ class WeatherApp(wx.Frame):
 
     def _on_settings_dialog_closed(self) -> None:
         self.settings_dialog = None
-    
+
     def _apply_theme_to_existing_ui(self) -> None:
         p = self.palette
 
@@ -497,6 +503,32 @@ class WeatherApp(wx.Frame):
 
         wx.CallLater(1000, tick)
 
+    def _reset_auto_retry(self) -> None:
+        self._auto_retry_city = None
+        self._auto_retry_count = 0
+
+    def _start_auto_retry_cycle(self, city: str) -> None:
+        self._auto_retry_city = (city or "").strip().lower()
+        self._auto_retry_count = 0
+
+    def _can_auto_retry(self, city: str) -> bool:
+        norm_city = (city or "").strip().lower()
+        if not norm_city:
+            return False
+
+        if self._auto_retry_city != norm_city:
+            self._auto_retry_city = norm_city
+            self._auto_retry_count = 0
+
+        return self._auto_retry_count < _MAX_UI_AUTO_RETRIES
+
+    def _mark_auto_retry_scheduled(self, city: str) -> None:
+        norm_city = (city or "").strip().lower()
+        if self._auto_retry_city != norm_city:
+            self._auto_retry_city = norm_city
+            self._auto_retry_count = 0
+        self._auto_retry_count += 1
+
     def _build_forecast_strip(self, parent: wx.Window) -> None:
         self.forecast_scroll = scrolled.ScrolledPanel(parent, size=(-1, 180), style=wx.SUNKEN_BORDER)
         self.forecast_scroll.SetBackgroundColour(self.palette.forecast_strip_bg)
@@ -587,13 +619,15 @@ class WeatherApp(wx.Frame):
         except Exception:
             pass
 
-    def _on_get_weather(self, event=None, *, mark_user: bool = True):
+    # TODO for cache-then-refresh in the frame
+    def _on_get_weather(self, event=None, *, mark_user: bool = True, force: bool = False):
         self._hide_reconnect_status()
 
         if mark_user:
             self._user_started_searching = True
+            self._start_auto_retry_cycle(self.location.GetValue().strip())
 
-        if not self.search_btn.IsEnabled():
+        if not force and not self.search_btn.IsEnabled():
             return
 
         city = self.location.GetValue().strip()
@@ -614,6 +648,7 @@ class WeatherApp(wx.Frame):
         self._set_current_loading(True, city=city)
 
         def work(local_city: str, local_req_id: int):
+            retry_scheduled = False
             logger.info("Worker start req_id=%s city=%r", local_req_id, local_city)
             try:
                 data = self.service.fetch(
@@ -630,29 +665,50 @@ class WeatherApp(wx.Frame):
                 logger.warning("Worker input error req_id=%s city=%r err=%s", local_req_id, local_city, e)
                 self._call_after_if_latest(local_req_id, self.show_error, str(e))
 
-            except (NetworkError, ProviderError) as e:
-                if is_retryable_error(e):
-                    logger.info("Scheduling auto-refetch due to retryable error city=%r", local_city)
+            except NetworkError as e:
+                if self._can_auto_retry(local_city):
+                    retry_scheduled = True   
+
+                    logger.info(
+                        "Scheduling auto-refetch city=%r ui_retry=%s/%s",
+                        local_city,
+                        self._auto_retry_count + 1,
+                        _MAX_UI_AUTO_RETRIES,
+                    )
+                    self._mark_auto_retry_scheduled(local_city)
+
                     self._call_after_if_latest(
                         local_req_id,
                         self._schedule_refetch,
                         local_city,
                         failed_req_id=local_req_id,
                     )
+
                 else:
-                    logger.error(
-                        "Worker provider error req_id=%s city=%r err=%s",
-                        local_req_id, local_city, e
+                    self._call_after_if_latest(
+                        local_req_id,
+                        self.show_error,
+                        f"{e}\n\nAutomatic retry did not succeed.",
                     )
 
+            except ProviderError as e:
+                logger.error(
+                    "Worker provider error req_id=%s city=%r err=%s",
+                    local_req_id,
+                    local_city,
+                    e,
+                )
                 self._call_after_if_latest(local_req_id, self.show_error, str(e))
 
             finally:
-                self._call_after_if_latest(local_req_id, self._set_current_loading, False)
+                if not retry_scheduled:
+                    self._call_after_if_latest(local_req_id, self._set_current_loading, False)
 
         threading.Thread(target=work, args=(city, req_id), daemon=True).start()
 
     def show_error(self, msg: str):
+        self._hide_reconnect_status()
+        self._reset_auto_retry()
         self.current_panel.set_error(msg, city=self._current_display_city())
         wx.MessageBox(msg, "Weather App", wx.OK | wx.ICON_ERROR)
 
@@ -869,6 +925,15 @@ class WeatherApp(wx.Frame):
         self.Freeze()
         try:
             self.data = data
+            self._reset_auto_retry()
+
+            display_city = (data.current.city or "").strip()
+            if display_city:
+                self.location.SetValue(display_city)
+                self.location.SetInsertionPointEnd()
+
+                self.settings.last_city = display_city
+                self.settings_store.save(self.settings)
 
             try:
                 city = (data.current.city or "").strip()

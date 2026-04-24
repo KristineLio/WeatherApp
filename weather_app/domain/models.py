@@ -224,3 +224,5 @@ class WeatherData:
     hourly: HourlySeries
     lat: float
     lon: float
+    resolved_name: str | None = None
+    country: str | None = None

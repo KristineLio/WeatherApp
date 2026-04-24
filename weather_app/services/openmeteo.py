@@ -1,11 +1,13 @@
 import requests
 import logging
 import time
-import threading
+
 from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
 from weather_app.utils.formatters import weekday_from_iso
 from weather_app.domain.settings import Units
 from weather_app.services.errors import NetworkError, ProviderError
+from weather_app.services.ttl_cache import TTLCache
+
 
 GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -14,12 +16,11 @@ _FORECAST_TIMEOUT = 10
 
 _MAX_HTTP_ATTEMPTS = 3
 _RETRY_BACKOFF_S = 0.6
+_DEFAULT_WEATHER_CACHE_TTL_S = 120
+_DEFAULT_GEO_CACHE_TTL_S = 7 * 24 * 60 * 60  # 7 days
 
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# Weather Service
-# ============================================================================
 
 class WeatherService:
     """
@@ -38,10 +39,11 @@ class WeatherService:
         geo_timeout: int = _GEO_TIMEOUT,
         forecast_timeout: int = _FORECAST_TIMEOUT,
         session: requests.Session | None = None,
+        cache_ttl_s: int = _DEFAULT_WEATHER_CACHE_TTL_S,
+        geo_cache_ttl_s: int = _DEFAULT_GEO_CACHE_TTL_S,
     ):
-        self._cache: dict[tuple, tuple[float, WeatherData]] = {}
-        self._cache_ttl_s = 120  # 2 minutes
-        self._cache_lock = threading.Lock()
+        self._cache = TTLCache[tuple[str, str, int], WeatherData](cache_ttl_s)
+        self._geo_cache = TTLCache[str, tuple[float, float, str, str | None]](geo_cache_ttl_s)
 
         self._geo_url = geo_url
         self._forecast_url = forecast_url
@@ -49,30 +51,60 @@ class WeatherService:
         self._forecast_timeout = forecast_timeout
         self._session = session or requests.Session()
 
-    # ---------- caching helpers ----------
-    """ Simple in-memory cache with TTL. """
-    """
-        “Cache-then-refresh”
-        If cached data exists and is recent → show it immediately
-        In background → still fetch fresh data and update UI when done
-    """
-    def _cache_key(self, city: str, units, forecast_days: int) -> tuple:
-        return (city.strip().lower(), str(units), int(forecast_days))
+    # ---------- weather cache helpers ----------
+    def _cache_key(self, city: str, units: Units, forecast_days: int) -> tuple[str, str, int]:
+        return (" ".join((city or "").strip().lower().split()), units.value, int(forecast_days))
 
-    def _cache_get(self, key):
-        with self._cache_lock:
-            item = self._cache.get(key)
-            if not item:
-                return None
-            ts, data = item
-            if time.time() - ts > self._cache_ttl_s:
-                self._cache.pop(key, None)
-                return None
-            return data
+    def _cache_get(self, key: tuple[str, str, int]) -> WeatherData | None:
+        return self._cache.get(key)
+
+    def _cache_set(self, key: tuple[str, str, int], data: WeatherData) -> None:
+        self._cache.set(key, data)
+
+    # ---------- geocode cache helpers ----------
+
+    def _normalize_city_key(self, city: str) -> str:
+        return " ".join((city or "").strip().lower().split())
+
+    def _geo_cache_get(self, city: str) -> tuple[float, float, str, str | None] | None:
+        key = self._normalize_city_key(city)
+        if not key:
+            return None
+        return self._geo_cache.get(key)
+
+    def _geo_cache_set(
+        self,
+        city: str,
+        value: tuple[float, float, str, str | None],
+    ) -> None:
+        key = self._normalize_city_key(city)
+        if not key:
+            return
+        self._geo_cache.set(key, value)
     
-    def _cache_set(self, key, data):
-        with self._cache_lock:
-            self._cache[key] = (time.time(), data)
+    def _normalize_location_input(self, city: str) -> str:
+        text = " ".join((city or "").strip().split())
+        if not text:
+            return "Sofia"
+
+        # Accept "Kavala Greece" by turning last word into country hint
+        # only when user did not already type a comma.
+        if "," not in text:
+            parts = text.split()
+            if len(parts) >= 2:
+                return f"{' '.join(parts[:-1])}, {parts[-1]}"
+
+        return text
+
+
+    def _display_city(self, resolved_name: str, country: str | None) -> str:
+        name = (resolved_name or "").strip() or "Unknown"
+        country = (country or "").strip()
+
+        if not country:
+            return name
+
+        return f"{name}, {country}"
 
     # ---------- public API ----------
 
@@ -89,24 +121,38 @@ class WeatherService:
         except Exception:
             return None
 
-    def fetch(self, city: str, *, units: Units = Units.METRIC, forecast_days: int = 7,) -> WeatherData:
+    def fetch(
+        self,
+        city: str,
+        *,
+        units: Units = Units.METRIC,
+        forecast_days: int = 7,
+    ) -> WeatherData:
         """
         Fetch weather for a city and return a fully built WeatherData domain object.
         Raises typed service exceptions for network/provider failures.
         """
+        city = self._normalize_location_input(city)
         key = self._cache_key(city, units, forecast_days)
+
         t0 = time.perf_counter()
         cached = self._cache_get(key)
         if cached is not None:
             logger.info(
-                "Cache HIT city=%r (%.2f ms)",
+                "Cache HIT city=%r units=%s days=%s (%.2f ms)",
                 city,
+                units.value,
+                forecast_days,
                 (time.perf_counter() - t0) * 1000,
             )
             return cached
-        logger.debug("Cache MISS city=%r units=%s days=%s", city, units, forecast_days)
 
-        city = (city or "").strip() or "Sofia"
+        logger.debug(
+            "Cache MISS city=%r units=%s days=%s",
+            city,
+            units.value,
+            forecast_days,
+        )
         logger.info("Fetch weather start city=%r", city)
 
         try:
@@ -126,11 +172,13 @@ class WeatherService:
             }
 
             if units == Units.IMPERIAL:
-                params.update({
-                    "temperature_unit": "fahrenheit",
-                    "wind_speed_unit": "mph",
-                    "precipitation_unit": "inch",
-                })
+                params.update(
+                    {
+                        "temperature_unit": "fahrenheit",
+                        "wind_speed_unit": "mph",
+                        "precipitation_unit": "inch",
+                    }
+                )
 
             forecast = self._get_json(
                 self._forecast_url,
@@ -159,7 +207,7 @@ class WeatherService:
                 hourly_series.derive_current_extras(current_time_iso)
             )
 
-            display_city = f"{resolved_name}, {country}" if country else resolved_name
+            display_city = self._display_city(resolved_name, country)
 
             cur = CurrentSnapshot(
                 temp=current.get("temperature"),
@@ -179,17 +227,25 @@ class WeatherService:
                 hourly=hourly_series,
                 lat=lat,
                 lon=lon,
+                resolved_name=resolved_name,
+                country=country,
             )
 
             logger.debug(
                 "Cache STORE city=%r units=%s days=%s ttl=%ss",
-                city, units, forecast_days, self._cache_ttl_s
+                city,
+                units.value,
+                forecast_days,
+                self._cache.ttl_s,
             )
             self._cache_set(key, wd)
 
             logger.info(
                 "Fetch weather success city=%r resolved=%r lat=%s lon=%s",
-                city, wd.current.city, lat, lon
+                city,
+                wd.current.city,
+                lat,
+                lon,
             )
             return wd
 
@@ -201,7 +257,7 @@ class WeatherService:
             raise
 
         except Exception as e:
-            # Any bug / parsing surprise -> ProviderError (consistent for UI)
+            # Any bug / parsing surprise -> ProviderError 
             logger.exception("Unexpected service error city=%r", city)
             raise ProviderError("Weather service failed while processing data.") from e
 
@@ -247,7 +303,7 @@ class WeatherService:
                 )
 
                 r = self._session.get(url, params=params, timeout=timeout)
-
+                
                 # Retry only 429 + 5xx
                 if r.status_code == 429 or 500 <= r.status_code <= 599:
                     if attempt < max_attempts:
@@ -270,7 +326,7 @@ class WeatherService:
                         safe_params,
                     )
                     raise NetworkError(f"Weather service temporarily unavailable (HTTP {r.status_code}).")
-
+                
                 # Non-retryable HTTP errors (400/404/etc.)
                 r.raise_for_status()
 
@@ -338,10 +394,20 @@ class WeatherService:
                 )
                 raise NetworkError("Network error while contacting weather service.") from e
 
-        raise ProviderError("Weather service failed unexpectedly.")
+        raise NetworkError("Network error while contacting weather service.")
 
-    def _geocode_city(self, city: str) -> tuple[float, float, str, str]:
-        """Return (lat, lon, resolved_name, country). Raise ValueError if not found."""
+    def _geocode_city(self, city: str) -> tuple[float, float, str, str | None]:
+        """
+        Return (lat, lon, resolved_name, country).
+        Raise ValueError if not found.
+        """
+        cached = self._geo_cache_get(city)
+        if cached is not None:
+            logger.info("Geocode cache HIT city=%r", city)
+            return cached
+
+        logger.debug("Geocode cache MISS city=%r", city)
+
         geo = self._get_json(
             self._geo_url,
             params={"name": city, "count": 1, "language": "en", "format": "json"},
@@ -349,16 +415,38 @@ class WeatherService:
             attempts=_MAX_HTTP_ATTEMPTS,
             backoff_s=_RETRY_BACKOFF_S,
         )
+
         results = geo.get("results") or []
         if not results:
             raise ValueError("City not found. Please try another name.")
+
         r0 = results[0]
-        return (
+
+        resolved_name = (
+            str(r0.get("name") or "").strip()
+            or str(city or "").strip()
+            or "Unknown"
+        )
+
+        country = str(r0.get("country") or "").strip() or None
+
+        out = (
             float(r0["latitude"]),
             float(r0["longitude"]),
-            r0.get("name", city),
-            r0.get("country", ""),
+            resolved_name,
+            country,
         )
+
+        self._geo_cache_set(city, out)
+        logger.info(
+            "Geocode resolved city=%r -> lat=%s lon=%s resolved=%r country=%r",
+            city,
+            out[0],
+            out[1],
+            out[2],
+            out[3],
+        )
+        return out
 
     def _parse_daily(self, daily: dict) -> list[DailyForecast]:
         times = daily.get("time") or []
@@ -369,22 +457,19 @@ class WeatherService:
         sunsets = daily.get("sunset") or []
 
         n = min(len(times), len(tmaxs), len(tmins), len(codes))
-        out: list[DailyForecast] = []
 
+        out: list[DailyForecast] = []
         for i in range(n):
             date_iso = times[i]
-            sunrise_iso = sunrises[i] if i < len(sunrises) else None
-            sunset_iso = sunsets[i] if i < len(sunsets) else None
-
             out.append(
                 DailyForecast(
                     date_iso=date_iso,
                     weekday=weekday_from_iso(date_iso),
-                    tmax=tmaxs[i],
                     tmin=tmins[i],
+                    tmax=tmaxs[i],
                     code=codes[i],
-                    sunrise_iso=sunrise_iso,
-                    sunset_iso=sunset_iso,
+                    sunrise_iso=sunrises[i] if i < len(sunrises) else None,
+                    sunset_iso=sunsets[i] if i < len(sunsets) else None,
                 )
             )
         return out

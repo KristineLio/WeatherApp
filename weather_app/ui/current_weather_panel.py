@@ -219,8 +219,19 @@ class CurrentWeatherPanel(wx.Panel):
 
         self.Layout()
         self.Refresh()
-
+    
     def show_reconnect_status(self, seconds: int) -> None:
+        self._show_loading_animation()
+        self.temp_label.SetLabel("")
+        self.desc_label.SetForegroundColour(self._muted_text_color)
+        self.desc_label.SetLabel("Reconnecting…")
+        self.status_label.Show()
+        self.status_label.SetLabel(f"Retrying automatically in {seconds}s")
+        self.Layout()
+        self.Refresh()
+        self.Update()
+    """
+     def show_reconnect_status(self, seconds: int) -> None:
         self._show_loading_animation()
 
         self.temp_label.SetLabel("")
@@ -232,6 +243,7 @@ class CurrentWeatherPanel(wx.Panel):
 
         self.Layout()
         self.Refresh()
+    """
 
     def update_reconnect_status(self, seconds: int) -> None:
         self.status_label.SetLabel(f"Retrying automatically in {seconds}s")
