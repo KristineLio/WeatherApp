@@ -64,7 +64,8 @@ class CurrentWeatherPanel(wx.Panel):
         left_col = wx.BoxSizer(wx.VERTICAL)
         right_col = wx.BoxSizer(wx.VERTICAL)
 
-        left_col.SetMinSize((220, -1))
+        left_col.SetMinSize((95, -1))
+        right_col.SetMinSize((0, -1))
 
         self.temp_label = wx.StaticText(self, label="--")
         self._style_label(self.temp_label, self._font_temp, self._text_color)
@@ -80,7 +81,7 @@ class CurrentWeatherPanel(wx.Panel):
         )
         self.icon_host_sizer.Add(self.current_icon_ctrl, 0, wx.ALIGN_LEFT)
 
-        self.desc_label = wx.StaticText(self, label=" ", style=wx.ALIGN_CENTER)
+        self.desc_label = wx.StaticText(self, label=" ")
         self._style_label(self.desc_label, self._font_desc, self._text_color)
 
         self.status_label = wx.StaticText(self, label="")
@@ -97,6 +98,7 @@ class CurrentWeatherPanel(wx.Panel):
         self.status_label.Hide()
 
         self.retry_btn = wx.Button(self, label="Retry")
+        self.retry_btn.SetMinSize((110, 34))
         self.retry_btn.Hide()
 
         self.precip_label = self._build_metric_label("Precipitation: —")
@@ -110,15 +112,16 @@ class CurrentWeatherPanel(wx.Panel):
         left_col.Add(self.temp_label, 0, wx.BOTTOM, 2)
         left_col.Add(self.icon_host, 0, wx.BOTTOM, 4)
 
-        right_col.Add(self.desc_label, 0, wx.EXPAND | wx.BOTTOM, 6)
-        right_col.Add(self.status_label, 0, wx.EXPAND | wx.BOTTOM, 6)
-        right_col.Add(self.retry_btn, 0, wx.TOP | wx.BOTTOM, 4)
-        right_col.Add(self.precip_label, 0, wx.EXPAND | wx.BOTTOM, 2)
-        right_col.Add(self.humidity_label, 0, wx.EXPAND | wx.BOTTOM, 2)
-        right_col.Add(self.wind_label, 0, wx.EXPAND | wx.BOTTOM, 2)
-        right_col.Add(self.feels_label, 0, wx.EXPAND)
+        right_col.Add(self.desc_label, 0, wx.LEFT | wx.BOTTOM, 0)
+        right_col.Add(self.status_label, 0, wx.LEFT | wx.BOTTOM, 0)
+        right_col.Add(self.retry_btn, 0, wx.LEFT | wx.TOP | wx.BOTTOM, 0)
 
-        main_row.Add(left_col, 0, wx.RIGHT, 20)
+        right_col.Add(self.precip_label, 0, wx.LEFT | wx.BOTTOM, 0)
+        right_col.Add(self.humidity_label, 0, wx.LEFT | wx.BOTTOM, 0)
+        right_col.Add(self.wind_label, 0, wx.LEFT | wx.BOTTOM, 0)
+        right_col.Add(self.feels_label, 0, wx.LEFT, 0)
+
+        main_row.Add(left_col, 0, wx.RIGHT, 8)
         main_row.Add(right_col, 1, wx.EXPAND)
 
         bottom_row = wx.BoxSizer(wx.HORIZONTAL)
@@ -171,6 +174,12 @@ class CurrentWeatherPanel(wx.Panel):
             self.current_icon_ctrl.Play()
         elif isinstance(self.current_icon_ctrl, wx.StaticBitmap):
             self.current_icon_ctrl.SetBitmap(get_icon_bitmap(icon_png, size=(60, 60)))
+    
+    def _wrap_dynamic_labels(self) -> None:
+        width = max(180, self.GetClientSize().width - 130)
+        self.desc_label.Wrap(width)
+        self.status_label.Wrap(width)
+        self.city_label.Wrap(max(180, self.GetClientSize().width - 30))
 
     def apply_view(self, view: CurrentWeatherViewData) -> None:
         self._cur_icon_png = view.icon_png
@@ -189,6 +198,7 @@ class CurrentWeatherPanel(wx.Panel):
         self.status_label.Hide()
         self.retry_btn.Hide()
         self._set_current_icon(icon_png=view.icon_png, icon_gif=view.icon_gif)
+        self._wrap_dynamic_labels()
 
         self.Layout()
         self.Refresh()
@@ -211,21 +221,24 @@ class CurrentWeatherPanel(wx.Panel):
 
             self._set_metric_placeholders()
             self._show_loading_animation()
-
+            self._wrap_dynamic_labels()
+            
         self.Layout()
         self.Refresh()
 
-    def set_error(self, msg: str, *, city: str = "", show_retry: bool = False) -> None:
-        self.status_label.Hide()
+    def set_error(self,*, city: str = "", show_retry: bool = False) -> None:
+        self.status_label.Show()
         self.retry_btn.Show(show_retry)
 
-        self.temp_label.SetLabel("—")
+        self.temp_label.SetLabel("")
         self.desc_label.SetForegroundColour(self._text_color)
-        self.desc_label.SetLabel(msg)
+        self.desc_label.SetLabel("Connection problem")
+        self.status_label.SetLabel("Could not update weather.")
         self.city_label.SetLabel(city or "")
 
         self._set_metric_placeholders()
         self._set_current_icon(icon_png="unknown.png", icon_gif="unknown.gif")
+        self._wrap_dynamic_labels()
 
         self.Layout()
         self.Refresh()
@@ -238,12 +251,15 @@ class CurrentWeatherPanel(wx.Panel):
         self.status_label.Show()
         self.status_label.SetLabel(f"Retrying automatically in {seconds}s")
         self.retry_btn.Hide()
+        self._wrap_dynamic_labels()
+
         self.Layout()
         self.Refresh()
         self.Update()
 
     def update_reconnect_status(self, seconds: int) -> None:
         self.status_label.SetLabel(f"Retrying automatically in {seconds}s")
+        self._wrap_dynamic_labels()
         self.Layout()
         self.Refresh()
 

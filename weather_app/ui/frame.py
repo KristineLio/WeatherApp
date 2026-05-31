@@ -719,7 +719,6 @@ class WeatherApp(wx.Frame):
         self._hide_reconnect_status()
         self._reset_auto_retry()
         self.current_panel.set_error(
-            msg,
             city=self._current_display_city(),
             show_retry=show_retry,
         )
