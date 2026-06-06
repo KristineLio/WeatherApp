@@ -52,6 +52,10 @@ class WeatherApp(wx.Frame):
         self._user_started_searching = False
 
         self.service = WeatherService()
+        # second UI-level cache used for cache-then-refresh.
+        self.refresh_service = WeatherService(cache_ttl_s=0)
+        self._ui_weather_cache: dict[tuple[str, str, int], WeatherData] = {}
+        
         self.forecast_cards: list[WeatherCard] = []
         self.hour_tiles: list[HourTile] = []
         self.data: WeatherData | None = None
@@ -627,7 +631,25 @@ class WeatherApp(wx.Frame):
         except Exception:
             pass
 
-    # TODO for cache-then-refresh in the frame
+    def _weather_cache_key(self, city: str) -> tuple[str, str, int]:
+        normalized_city = " ".join((city or "").strip().lower().split())
+        return (
+            normalized_city,
+            self.settings.units.value,
+            int(getattr(self.settings, "forecast_days", 7)),
+        )
+
+    def _get_cached_weather(self, city: str) -> WeatherData | None:
+        return self._ui_weather_cache.get(self._weather_cache_key(city))
+
+    def _store_cached_weather(self, city: str, data: WeatherData) -> None:
+        # Store under the typed city and the resolved display city. This helps future
+        # searches hit the cache after update_ui changes the text box to "City, Country".
+        self._ui_weather_cache[self._weather_cache_key(city)] = data
+        display_city = (getattr(data.current, "city", "") or "").strip()
+        if display_city:
+            self._ui_weather_cache[self._weather_cache_key(display_city)] = data
+
     def _on_get_weather(self, event=None, *, mark_user: bool = True, force: bool = False):
         self._hide_reconnect_status()
 
@@ -643,39 +665,75 @@ class WeatherApp(wx.Frame):
             return
 
         logger.info(
-            "User search city=%r units=%s forecast_days=%s",
+            "User search city=%r units=%s forecast_days=%s force=%s",
             city,
             self.settings.units.value,
             getattr(self.settings, "forecast_days", 7),
+            force,
         )
 
         self.settings.last_city = city
         self.settings_store.save(self.settings)
 
         req_id = self._next_request_id()
-        self._set_current_loading(True, city=city)
 
-        def work(local_city: str, local_req_id: int):
+        # Cache-then-refresh:
+        # 1) If the frame has cached data, render it immediately.
+        # 2) Still start a background refresh using refresh_service, whose weather
+        #    cache is disabled, so it really contacts the provider.
+        cached = None if force else self._get_cached_weather(city)
+        if cached is not None:
+            logger.info("UI cache HIT city=%r", city)
+            self.update_ui(cached, write_history=False)
+        else:
+            logger.debug("UI cache MISS city=%r", city)
+            self._set_current_loading(True, city=city)
+
+        def work(local_city: str, local_req_id: int, had_cache: bool):
             retry_scheduled = False
-            logger.info("Worker start req_id=%s city=%r", local_req_id, local_city)
+            logger.info(
+                "Worker refresh start req_id=%s city=%r had_cache=%s",
+                local_req_id,
+                local_city,
+                had_cache,
+            )
             try:
-                data = self.service.fetch(
+                data = self.refresh_service.fetch(
                     local_city,
                     units=self.settings.units,
                     forecast_days=self.settings.forecast_days,
                 )
-                logger.info("Worker success req_id=%s city=%r", local_req_id, local_city)
+                logger.info("Worker refresh success req_id=%s city=%r", local_req_id, local_city)
 
-                self._call_after_if_latest(local_req_id, self._hide_reconnect_status)
-                self._call_after_if_latest(local_req_id, self.update_ui, data)
+                def apply_success() -> None:
+                    self._hide_reconnect_status()
+                    self._store_cached_weather(local_city, data)
+                    self.update_ui(data, write_history=True)
+                    self._set_current_loading(False)
+
+                self._call_after_if_latest(local_req_id, apply_success)
 
             except ValueError as e:
                 logger.warning("Worker input error req_id=%s city=%r err=%s", local_req_id, local_city, e)
-                self._call_after_if_latest(local_req_id, self.show_error, str(e))
+                if had_cache:
+                    logger.info("Ignoring refresh input error because cached data is already visible")
+                    self._call_after_if_latest(local_req_id, self._set_current_loading, False)
+                else:
+                    self._call_after_if_latest(local_req_id, self.show_error, str(e))
 
             except NetworkError as e:
+                if had_cache:
+                    logger.info(
+                        "Refresh failed but cached data is visible req_id=%s city=%r err=%s",
+                        local_req_id,
+                        local_city,
+                        e,
+                    )
+                    self._call_after_if_latest(local_req_id, self._set_current_loading, False)
+                    return
+
                 if self._can_auto_retry(local_city):
-                    retry_scheduled = True   
+                    retry_scheduled = True
 
                     logger.info(
                         "Scheduling auto-refetch city=%r ui_retry=%s/%s",
@@ -707,13 +765,17 @@ class WeatherApp(wx.Frame):
                     local_city,
                     e,
                 )
-                self._call_after_if_latest(local_req_id, self.show_error, str(e))
+                if had_cache:
+                    logger.info("Ignoring refresh provider error because cached data is already visible")
+                    self._call_after_if_latest(local_req_id, self._set_current_loading, False)
+                else:
+                    self._call_after_if_latest(local_req_id, self.show_error, str(e))
 
             finally:
-                if not retry_scheduled:
+                if not retry_scheduled and not had_cache:
                     self._call_after_if_latest(local_req_id, self._set_current_loading, False)
 
-        threading.Thread(target=work, args=(city, req_id), daemon=True).start()
+        threading.Thread(target=work, args=(city, req_id, cached is not None), daemon=True).start()
 
     def show_error(self, msg: str, *, show_retry: bool = False):
         self._hide_reconnect_status()
@@ -933,7 +995,7 @@ class WeatherApp(wx.Frame):
         for card in self.forecast_cards:
             card.set_selected(card.date_iso == date_iso)
 
-    def update_ui(self, data: WeatherData):
+    def update_ui(self, data: WeatherData, *, write_history: bool = True):
         self.Freeze()
         try:
             self.data = data
@@ -947,12 +1009,13 @@ class WeatherApp(wx.Frame):
                 self.settings.last_city = display_city
                 self.settings_store.save(self.settings)
 
-            try:
-                city = (data.current.city or "").strip()
-                if city:
-                    self.storage.add_history(city=city, lat=data.lat, lon=data.lon)
-            except Exception:
-                logger.exception("Failed to write search history")
+            if write_history:
+                try:
+                    city = (data.current.city or "").strip()
+                    if city:
+                        self.storage.add_history(city=city, lat=data.lat, lon=data.lon)
+                except Exception:
+                    logger.exception("Failed to write search history")
 
             today_iso = data.current.date_iso
             self.selected_date = today_iso
