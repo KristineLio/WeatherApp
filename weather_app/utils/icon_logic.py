@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Iterable, Tuple, TypeAlias
 
+from weather_app.utils.paths import PNG_DIR, GIF_DIR
+
 Value: TypeAlias = float | int | None
 IconTable: TypeAlias = Iterable[Tuple[float, str]]
 
@@ -57,14 +59,23 @@ WIND_ICONS: list[tuple[float, str]] = [
     (1000, "wind_gale.png"),
 ]
 
+def night_variant(filename: str, *, night: bool, kind: str = "png") -> str:
+    if not night:
+        return filename
+
+    base, ext = filename.rsplit(".", 1)
+    candidate = f"{base}_night.{ext}"
+
+    folder = GIF_DIR if kind == "gif" else PNG_DIR
+
+    if (folder / candidate).exists():
+        return candidate
+
+    return filename
 
 def code_to_label_icon(code: int, *, night: bool = False) -> tuple[str, str]:
     label, icon = WEATHERCODE_MAP.get(int(code), ("Weather", "unknown.png"))
-    if night:
-        base, ext = icon.rsplit(".", 1)
-        return label, f"{base}_night.{ext}"
-    return label, icon
-
+    return label, night_variant(icon, night=night, kind="png")
 
 def pick_icon_by_threshold(value: Value, table: IconTable, fallback: str = "unknown.png") -> str:
     if value is None:
@@ -111,5 +122,4 @@ def code_to_gif(code: int | None, *, night: bool = False) -> str:
         99: "storm.gif",
     }.get(int(code), "unknown.gif")
 
-
-    return base.replace(".gif", "_night.gif") if night else base
+    return night_variant(base, night=night, kind="gif")
