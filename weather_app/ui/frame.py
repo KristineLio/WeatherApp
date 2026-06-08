@@ -10,10 +10,11 @@ import wx.lib.scrolledpanel as scrolled
 from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
 from weather_app.domain.modes import HourlyMode, DEFAULT_MODE, get_mode_meta
 from weather_app.services.errors import NetworkError, ProviderError
-from weather_app.services.openmeteo import WeatherService
 from weather_app.services.settings_store import SettingsStore
 from weather_app.services.storage import StorageRepo
 from weather_app.ui.request_state import RequestState
+from weather_app.ui.cache_refresh_manager import CacheRefreshManager
+from weather_app.ui.weather_controller import WeatherController
 from weather_app.ui.current_weather_panel import CurrentWeatherPanel
 from weather_app.ui.current_weather_presenter import build_current_weather_view_data
 from weather_app.ui.hour_tile import HourTile
@@ -22,7 +23,6 @@ from weather_app.ui.settings_dialog import SettingsDialog
 from weather_app.ui.theme import get_palette, pick_card_bg
 from weather_app.ui.weather_card import WeatherCard
 from weather_app.ui.weather_card_presenter import build_forecast_card_view_data
-from weather_app.utils.formatters import is_night
 from weather_app.utils.paths import PNG_DIR
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,6 @@ VISIBLE_HOURLY_MODES = (
     HourlyMode.HUMIDITY,
 )
 
-_MAX_UI_AUTO_RETRIES = 1
 
 
 class WeatherApp(wx.Frame):
@@ -51,10 +50,13 @@ class WeatherApp(wx.Frame):
 
         self._user_started_searching = False
 
-        self.service = WeatherService()
-        # second UI-level cache used for cache-then-refresh.
-        self.refresh_service = WeatherService(cache_ttl_s=0)
-        self._ui_weather_cache: dict[tuple[str, str, int], WeatherData] = {}
+        self.controller = WeatherController(
+            storage=self.storage,
+            settings_store=self.settings_store,
+        )
+        self.cache_refresh = CacheRefreshManager()
+        # Keep this alias so startup detection code stays simple.
+        self.service = self.cache_refresh.service
         
         self.forecast_cards: list[WeatherCard] = []
         self.hour_tiles: list[HourTile] = []
@@ -63,9 +65,6 @@ class WeatherApp(wx.Frame):
         self.hourly_mode: HourlyMode = HourlyMode.TEMPERATURE
 
         self.request_state = RequestState()
-
-        self._auto_retry_city: str | None = None
-        self._auto_retry_count: int = 0
 
         self._init_ui()
         self.Centre()
@@ -117,11 +116,7 @@ class WeatherApp(wx.Frame):
         self.settings_store.save(self.settings)
 
     def _auto_fetch_on_start(self):
-        initial_city = (
-            self.settings.last_city
-            or self.settings.default_city
-            or "Sofia"
-        ).strip()
+        initial_city = self.controller.initial_city(self.settings)
 
         def apply_initial():
             if not self.location.GetValue().strip():
@@ -285,14 +280,16 @@ class WeatherApp(wx.Frame):
         self._toggle_favorite_for_current()
 
     def _current_city_for_star(self) -> str:
-        if self.data and getattr(self.data, "current", None) and getattr(self.data.current, "city", ""):
-            return (self.data.current.city or "").strip()
-        return (self.location.GetValue() or "").strip()
+        return self.controller.current_city_for_star(
+            self.data,
+            self.location.GetValue(),
+        )
 
     def _current_display_city(self) -> str:
-        if self.data and self.data.current and self.data.current.city:
-            return self.data.current.city
-        return (self.location.GetValue() or "").strip()
+        return self.controller.current_display_city(
+            self.data,
+            self.location.GetValue(),
+        )
 
     def _set_star_state(self, filled: bool) -> None:
         if not hasattr(self, "fav_btn"):
@@ -306,93 +303,73 @@ class WeatherApp(wx.Frame):
             self._set_star_state(False)
             return
         try:
-            self._set_star_state(self.storage.is_favorite(city))
+            self._set_star_state(self.controller.is_favorite(city))
         except Exception:
             self._set_star_state(False)
 
     def _toggle_favorite_for_current(self) -> None:
-        city = self._current_city_for_star()
-        if not city:
-            return
-
         try:
-            if self.storage.is_favorite(city):
-                self.storage.remove_favorite(city)
-            else:
-                lat = getattr(self.data, "lat", None) if self.data else None
-                lon = getattr(self.data, "lon", None) if self.data else None
-                country = getattr(self.data, "country", None) if self.data else None
-
-                self.storage.add_favorite(
-                    city=city,
-                    lat=lat,
-                    lon=lon,
-                    country=country,
-                )
+            self.controller.toggle_favorite(
+                data=self.data,
+                typed_city=self.location.GetValue(),
+            )
         finally:
             self._refresh_star_state()
 
     def _load_city_from_settings(self, city: str) -> None:
-        city = (city or "").strip()
+        city = self.controller.apply_loaded_city(self.settings, city)
         if not city:
             return
 
         self.location.SetValue(city)
-        self.settings.last_city = city
-        self.settings_store.save(self.settings)
         self._on_get_weather(mark_user=False)
 
     def _apply_settings_from_dialog(self, new_settings) -> None:
         old_settings = self.settings
-        old_forecast = getattr(old_settings, "forecast_days", 7)
-
-        theme_changed = new_settings.theme != old_settings.theme
-        units_changed = new_settings.units != old_settings.units
-        forecast_changed = getattr(new_settings, "forecast_days", 7) != old_forecast
-        default_changed = new_settings.default_city != old_settings.default_city
-        animated_changed = (
-            getattr(new_settings, "animated_current_icon", False)
-            != getattr(old_settings, "animated_current_icon", False)
-        )
+        plan = self.controller.analyze_settings_change(old_settings, new_settings)
 
         self.settings = new_settings
         self.settings_store.save(self.settings)
 
-        if theme_changed:
+        if plan.theme_changed:
             self._apply_theme()
             self._apply_theme_to_existing_ui()
 
-        if animated_changed and hasattr(self, "current_panel"):
+        if plan.animated_changed and hasattr(self, "current_panel"):
             self.current_panel.set_animated_enabled(
                 getattr(self.settings, "animated_current_icon", False)
             )
             self.current_panel.Layout()
             self.current_panel.Refresh()
 
-        if units_changed and self.location.GetValue().strip():
+        if plan.units_changed and self.location.GetValue().strip():
             self._on_get_weather(mark_user=False)
             return
 
-        if forecast_changed and self.data:
-            visible_dates = {d.date_iso for d in self.data.daily[: self.settings.forecast_days]}
-            if self.selected_date not in visible_dates:
-                self.selected_date = self.data.current.date_iso
+        if plan.forecast_changed and self.data:
+            new_selected = self.controller.selected_date_after_forecast_change(
+                data=self.data,
+                selected_date=self.selected_date,
+                forecast_days=self.settings.forecast_days,
+            )
+            if new_selected != self.selected_date:
+                self.selected_date = new_selected
                 self._update_current_block(self.data)
 
             self._rebuild_forecast_cards(self.data.daily)
             self._refresh_hourly_strip()
 
-            if self.settings.forecast_days > old_forecast and self.location.GetValue().strip():
+            if self.settings.forecast_days > plan.old_forecast_days and self.location.GetValue().strip():
                 self._on_get_weather(mark_user=False)
                 return
 
         logger.info(
             "Settings changed: forecast_days %s -> %s",
-            old_forecast,
+            plan.old_forecast_days,
             self.settings.forecast_days,
         )
 
-        if default_changed and not self.location.GetValue().strip():
+        if plan.default_changed and not self.location.GetValue().strip():
             self.location.SetValue(self.settings.default_city)
 
     def _on_open_settings(self, event: wx.CommandEvent) -> None:
@@ -468,9 +445,6 @@ class WeatherApp(wx.Frame):
         self.Layout()
         self.Refresh()
 
-    def set_retry_callback(self, callback) -> None:
-        self.retry_btn.Bind(wx.EVT_BUTTON, lambda event: callback())
-
     def _build_current_panel(self, parent: wx.Window) -> wx.Panel:
         self.current_panel = CurrentWeatherPanel(
             parent,
@@ -516,30 +490,16 @@ class WeatherApp(wx.Frame):
         wx.CallLater(1000, tick)
 
     def _reset_auto_retry(self) -> None:
-        self._auto_retry_city = None
-        self._auto_retry_count = 0
+        self.cache_refresh.reset_auto_retry()
 
     def _start_auto_retry_cycle(self, city: str) -> None:
-        self._auto_retry_city = (city or "").strip().lower()
-        self._auto_retry_count = 0
+        self.cache_refresh.start_auto_retry_cycle(city)
 
     def _can_auto_retry(self, city: str) -> bool:
-        norm_city = (city or "").strip().lower()
-        if not norm_city:
-            return False
-
-        if self._auto_retry_city != norm_city:
-            self._auto_retry_city = norm_city
-            self._auto_retry_count = 0
-
-        return self._auto_retry_count < _MAX_UI_AUTO_RETRIES
+        return self.cache_refresh.can_auto_retry(city)
 
     def _mark_auto_retry_scheduled(self, city: str) -> None:
-        norm_city = (city or "").strip().lower()
-        if self._auto_retry_city != norm_city:
-            self._auto_retry_city = norm_city
-            self._auto_retry_count = 0
-        self._auto_retry_count += 1
+        self.cache_refresh.mark_auto_retry_scheduled(city)
 
     def _build_forecast_strip(self, parent: wx.Window) -> None:
         self.forecast_scroll = scrolled.ScrolledPanel(parent, size=(-1, 180), style=wx.SUNKEN_BORDER)
@@ -632,23 +592,13 @@ class WeatherApp(wx.Frame):
             pass
 
     def _weather_cache_key(self, city: str) -> tuple[str, str, int]:
-        normalized_city = " ".join((city or "").strip().lower().split())
-        return (
-            normalized_city,
-            self.settings.units.value,
-            int(getattr(self.settings, "forecast_days", 7)),
-        )
+        return self.cache_refresh.weather_cache_key(city, self.settings)
 
     def _get_cached_weather(self, city: str) -> WeatherData | None:
-        return self._ui_weather_cache.get(self._weather_cache_key(city))
+        return self.cache_refresh.get_cached_weather(city, self.settings)
 
     def _store_cached_weather(self, city: str, data: WeatherData) -> None:
-        # Store under the typed city and the resolved display city. This helps future
-        # searches hit the cache after update_ui changes the text box to "City, Country".
-        self._ui_weather_cache[self._weather_cache_key(city)] = data
-        display_city = (getattr(data.current, "city", "") or "").strip()
-        if display_city:
-            self._ui_weather_cache[self._weather_cache_key(display_city)] = data
+        self.cache_refresh.store_cached_weather(city, data, self.settings)
 
     def _on_get_weather(self, event=None, *, mark_user: bool = True, force: bool = False):
         self._hide_reconnect_status()
@@ -698,11 +648,7 @@ class WeatherApp(wx.Frame):
                 had_cache,
             )
             try:
-                data = self.refresh_service.fetch(
-                    local_city,
-                    units=self.settings.units,
-                    forecast_days=self.settings.forecast_days,
-                )
+                data = self.cache_refresh.fetch_fresh(local_city, self.settings)
                 logger.info("Worker refresh success req_id=%s city=%r", local_req_id, local_city)
 
                 def apply_success() -> None:
@@ -738,8 +684,8 @@ class WeatherApp(wx.Frame):
                     logger.info(
                         "Scheduling auto-refetch city=%r ui_retry=%s/%s",
                         local_city,
-                        self._auto_retry_count + 1,
-                        _MAX_UI_AUTO_RETRIES,
+                        self.cache_refresh.auto_retry_count + 1,
+                        self.cache_refresh.max_auto_retries,
                     )
                     self._mark_auto_retry_scheduled(local_city)
 
@@ -832,49 +778,11 @@ class WeatherApp(wx.Frame):
         self.forecast_scroll.Layout()
 
     def _build_hourly_for_date(self, date_iso: str, mode: HourlyMode = DEFAULT_MODE) -> dict:
-        if not self.data:
-            return {
-                "labels": [],
-                "hours_int": [],
-                "values": [],
-                "codes": [],
-                "time_isos": [],
-                "nights": [],
-                "pivot_index": None,
-            }
-
-        series = self.data.hourly
-        today_iso = self.data.current.date_iso
-        current_time_iso = self.data.current.time_iso
-
-        day = next((d for d in self.data.daily if d.date_iso == date_iso), None)
-        sunrise_iso = day.sunrise_iso if day else None
-        sunset_iso = day.sunset_iso if day else None
-
-        out = series.build_day(
-            date_iso,
+        return self.controller.build_hourly_for_date(
+            data=self.data,
+            date_iso=date_iso,
             mode=mode,
-            today_iso=today_iso,
-            current_time_iso=current_time_iso,
         )
-
-        time_isos = out.get("time_isos", [])
-        out["nights"] = [is_night(t, sunrise_iso, sunset_iso) for t in time_isos]
-
-        def _hour_from_iso(s: str | None) -> int | None:
-            if not s:
-                return None
-            try:
-                return int(s.split("T")[1][:2])
-            except Exception:
-                return None
-
-        out["sunrise_hour"] = _hour_from_iso(sunrise_iso)
-        out["sunset_hour"] = _hour_from_iso(sunset_iso)
-        out["sunrise_iso"] = sunrise_iso
-        out["sunset_iso"] = sunset_iso
-
-        return out
 
     def _rebuild_hour_tiles(self, hourly: dict, date_iso: str | None):
         self.today_scroll.Freeze()
@@ -937,44 +845,9 @@ class WeatherApp(wx.Frame):
             self.today_scroll.Thaw()
 
     def _make_current_for_date(self, date_iso: str) -> CurrentSnapshot | None:
-        if not self.data:
-            return None
-
-        today_iso = self.data.current.date_iso
-        if date_iso == today_iso:
-            return self.data.current
-
-        selected_day = next((d for d in self.data.daily if d.date_iso == date_iso), None)
-        if not selected_day:
-            return None
-
-        snap = self.data.hourly.snapshot_for_date(date_iso, target_hour=15, strategy="peak_temp")
-
-        base = CurrentSnapshot(
-            temp=selected_day.tmax,
-            code=selected_day.code,
-            feels_like=None,
-            humidity=None,
-            precip=None,
-            wind=None,
+        return self.controller.make_current_for_date(
+            data=self.data,
             date_iso=date_iso,
-            time_iso=None,
-            city=self.data.current.city,
-        )
-
-        if not snap:
-            return base
-
-        return CurrentSnapshot(
-            temp=snap.get("temp"),
-            code=snap.get("code"),
-            feels_like=snap.get("feels_like"),
-            humidity=snap.get("humidity"),
-            precip=snap.get("precip"),
-            wind=snap.get("windspeed"),
-            date_iso=date_iso,
-            time_iso=snap.get("time"),
-            city=self.data.current.city,
         )
 
     def _on_forecast_card_click(self, date_iso: str):
@@ -1011,9 +884,7 @@ class WeatherApp(wx.Frame):
 
             if write_history:
                 try:
-                    city = (data.current.city or "").strip()
-                    if city:
-                        self.storage.add_history(city=city, lat=data.lat, lon=data.lon)
+                    self.controller.write_history(data)
                 except Exception:
                     logger.exception("Failed to write search history")
 
