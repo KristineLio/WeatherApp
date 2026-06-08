@@ -1,6 +1,12 @@
+import pytest
+
 from weather_app.domain.models import CurrentSnapshot, DailyForecast, HourlySeries, WeatherData
-from weather_app.domain.settings import Settings
+from weather_app.domain.settings import Settings, Units
+from weather_app.services.errors import NetworkError
 from weather_app.ui.cache_refresh_manager import CacheRefreshManager
+
+
+pytestmark = pytest.mark.integration
 
 
 class FakeRefreshService:
@@ -11,6 +17,16 @@ class FakeRefreshService:
     def fetch(self, city, *, units, forecast_days):
         self.calls.append((city, units, forecast_days))
         return self.data
+
+
+class FailingRefreshService:
+    def __init__(self, error):
+        self.error = error
+        self.calls = []
+
+    def fetch(self, city, *, units, forecast_days):
+        self.calls.append((city, units, forecast_days))
+        raise self.error
 
 
 def make_weather(city="Sofia, Bulgaria", temp=22):
@@ -91,3 +107,41 @@ def test_force_refresh_skips_cached_lookup_but_can_still_fetch_fresh():
 
     assert lookup.hit is False
     assert fresh_result.current.temp == 27
+    assert refresh_service.calls == [("Sofia", settings.units, settings.forecast_days)]
+
+
+def test_cached_data_remains_available_when_refresh_fails():
+    settings = Settings()
+    cached = make_weather(temp=20)
+    refresh_service = FailingRefreshService(NetworkError("network down"))
+    manager = CacheRefreshManager(refresh_service=refresh_service)
+
+    manager.store_cached_weather("Sofia", cached, settings)
+
+    lookup = manager.lookup_for_search(city="Sofia", settings=settings)
+    assert lookup.hit is True
+    assert lookup.cached.current.temp == 20
+
+    with pytest.raises(NetworkError, match="network down"):
+        manager.fetch_fresh("Sofia", settings)
+
+    lookup_after_failed_refresh = manager.lookup_for_search(city="Sofia", settings=settings)
+    assert lookup_after_failed_refresh.hit is True
+    assert lookup_after_failed_refresh.cached is cached
+    assert lookup_after_failed_refresh.cached.current.temp == 20
+    assert refresh_service.calls == [("Sofia", settings.units, settings.forecast_days)]
+
+
+def test_changed_settings_produce_cache_miss():
+    cached_metric = make_weather(temp=20)
+    manager = CacheRefreshManager(refresh_service=FakeRefreshService(make_weather(temp=25)))
+
+    metric_settings = Settings(units=Units.METRIC, forecast_days=7)
+    imperial_settings = Settings(units=Units.IMPERIAL, forecast_days=7)
+    fewer_days_settings = Settings(units=Units.METRIC, forecast_days=3)
+
+    manager.store_cached_weather("Sofia", cached_metric, metric_settings)
+
+    assert manager.lookup_for_search(city="Sofia", settings=metric_settings).hit is True
+    assert manager.lookup_for_search(city="Sofia", settings=imperial_settings).hit is False
+    assert manager.lookup_for_search(city="Sofia", settings=fewer_days_settings).hit is False

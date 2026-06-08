@@ -1,4 +1,8 @@
+import pytest
+
 from weather_app.services.storage import StorageRepo
+
+pytestmark = pytest.mark.integration
 
 
 def test_storage_repo_creates_database_and_tables(tmp_path):
