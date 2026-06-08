@@ -1,5 +1,3 @@
-import time
-
 from weather_app.services.ttl_cache import TTLCache
 
 
@@ -45,10 +43,13 @@ def test_clear_removes_all_keys():
     assert cache.get("b") is None
 
 
-def test_value_expires_after_ttl():
+def test_value_expires_after_ttl(monkeypatch):
+    now = 1_000.0
+    monkeypatch.setattr("weather_app.services.ttl_cache.time.time", lambda: now)
+
     cache = TTLCache[str, int](ttl_s=1)
     cache.set("a", 1)
 
-    time.sleep(1.05)
+    now = 1_002.0
 
     assert cache.get("a") is None

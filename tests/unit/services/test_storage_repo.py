@@ -109,3 +109,13 @@ def test_clear_history(tmp_path):
     repo.clear_history()
 
     assert repo.list_history() == []
+
+def test_remove_missing_favorite_and_history_are_noops(tmp_path):
+    repo = make_repo(tmp_path)
+
+    repo.remove_favorite("")
+    repo.remove_favorite("Not saved")
+    repo.remove_history(999)
+
+    assert repo.list_favorites() == []
+    assert repo.list_history() == []

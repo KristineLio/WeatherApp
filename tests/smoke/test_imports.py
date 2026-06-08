@@ -2,6 +2,8 @@ import importlib
 
 import pytest
 
+pytestmark = pytest.mark.smoke
+
 
 def test_import_domain_modules():
     import weather_app.domain.models

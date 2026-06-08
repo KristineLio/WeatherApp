@@ -90,38 +90,82 @@ def tmp_storage_repo(tmp_path) -> StorageRepo:
 
 
 class FakeResponse:
-    def __init__(self, payload: dict[str, Any] | None = None, *, status_code: int = 200):
-        self._payload = payload or {}
+    """Small fake requests.Response used by service unit tests.
+
+    Supports:
+    - JSON payloads
+    - HTTP status codes
+    - invalid JSON via json_error=True or json_error=Exception(...)
+    """
+
+    def __init__(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        status_code: int = 200,
+        json_error: bool | Exception = False,
+    ) -> None:
+        self._payload = payload if payload is not None else {}
         self.status_code = status_code
         self.response = self
+        self._json_error = json_error
 
     def json(self) -> dict[str, Any]:
+        if self._json_error:
+            if isinstance(self._json_error, Exception):
+                raise self._json_error
+            raise ValueError("invalid json")
         return self._payload
 
     def raise_for_status(self) -> None:
         import requests
 
         if 400 <= self.status_code:
-            raise requests.exceptions.HTTPError(response=self)
+            err = requests.exceptions.HTTPError(f"HTTP {self.status_code}")
+            err.response = self
+            raise err
 
 
 @dataclass
 class FakeSession:
-    responses: list[FakeResponse]
+    """Small fake requests.Session.
+
+    Each get() pops the next configured response. A configured BaseException is
+    raised, which lets tests simulate timeouts/connection errors.
+    """
+
+    responses: list[Any]
 
     def __post_init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    def get(self, url: str, *, params=None, timeout=None):
+    def get(self, url: str, params=None, timeout=None):
         self.calls.append({"url": url, "params": params or {}, "timeout": timeout})
         if not self.responses:
             raise AssertionError("FakeSession has no more responses")
-        return self.responses.pop(0)
+
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+@pytest.fixture
+def fake_response():
+    def factory(
+        payload: dict[str, Any] | None = None,
+        *,
+        status_code: int = 200,
+        json_error: bool | Exception = False,
+    ) -> FakeResponse:
+        return FakeResponse(payload, status_code=status_code, json_error=json_error)
+
+    return factory
 
 
 @pytest.fixture
 def fake_session_factory():
-    def factory(*responses: FakeResponse) -> FakeSession:
+    def factory(*responses: Any) -> FakeSession:
         return FakeSession(list(responses))
 
     return factory

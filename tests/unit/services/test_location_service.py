@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -8,40 +7,7 @@ import requests
 
 from weather_app.services.errors import NetworkError, ProviderError
 from weather_app.services.location import LocationService
-
-
-@dataclass
-class FakeResponse:
-    payload: dict | None = None
-    status_code: int = 200
-    json_error: Exception | None = None
-
-    def json(self) -> dict:
-        if self.json_error is not None:
-            raise self.json_error
-        return self.payload or {}
-
-    def raise_for_status(self) -> None:
-        if 400 <= self.status_code:
-            err = requests.exceptions.HTTPError(f"HTTP {self.status_code}")
-            err.response = self
-            raise err
-
-
-class FakeSession:
-    def __init__(self, responses: list[Any]):
-        self.responses = list(responses)
-        self.calls: list[dict[str, Any]] = []
-
-    def get(self, url: str, *, params: dict | None = None, timeout: int | None = None):
-        self.calls.append({"url": url, "params": params, "timeout": timeout})
-        if not self.responses:
-            raise AssertionError("FakeSession has no more responses")
-
-        response = self.responses.pop(0)
-        if isinstance(response, BaseException):
-            raise response
-        return response
+from tests.fixtures.weather_payloads import GEOCODE_EMPTY, GEOCODE_SOFIA
 
 
 # ---------------------------------------------------------------------------
@@ -93,28 +59,28 @@ def test_normalize_city_key_lowercases_and_collapses_spaces():
 # ---------------------------------------------------------------------------
 
 
-def test_detect_city_success_trims_city_name():
-    session = FakeSession([FakeResponse({"city": " Sofia "})])
+def test_detect_city_success_trims_city_name(fake_session_factory, fake_response):
+    session = fake_session_factory(fake_response({"city": " Sofia "}))
     service = LocationService(session=session)
 
     assert service.detect_city() == "Sofia"
     assert session.calls[0]["timeout"] == 5
 
 
-def test_detect_city_returns_none_when_city_missing():
-    session = FakeSession([FakeResponse({"city": ""})])
+def test_detect_city_returns_none_when_city_missing(fake_session_factory, fake_response):
+    session = fake_session_factory(fake_response({"city": ""}))
     service = LocationService(session=session)
 
     assert service.detect_city() is None
 
 
-def test_detect_city_returns_none_on_network_or_http_failure():
-    session = FakeSession([requests.exceptions.Timeout("slow")])
+def test_detect_city_returns_none_on_network_or_http_failure(fake_session_factory, fake_response):
+    session = fake_session_factory(requests.exceptions.Timeout("slow"))
     service = LocationService(session=session)
 
     assert service.detect_city() is None
 
-    session = FakeSession([FakeResponse({}, status_code=500)])
+    session = fake_session_factory(fake_response({}, status_code=500))
     service = LocationService(session=session)
 
     assert service.detect_city() is None
@@ -130,16 +96,7 @@ def test_geocode_city_success_returns_lat_lon_name_country():
 
     def fake_json_getter(url: str, **kwargs):
         calls.append({"url": url, **kwargs})
-        return {
-            "results": [
-                {
-                    "latitude": 42.6977,
-                    "longitude": 23.3219,
-                    "name": "Sofia",
-                    "country": "Bulgaria",
-                }
-            ]
-        }
+        return GEOCODE_SOFIA
 
     service = LocationService(json_getter=fake_json_getter)
 
@@ -158,16 +115,7 @@ def test_geocode_city_uses_cache_on_second_call():
     def fake_json_getter(url: str, **kwargs):
         nonlocal call_count
         call_count += 1
-        return {
-            "results": [
-                {
-                    "latitude": 42.6977,
-                    "longitude": 23.3219,
-                    "name": "Sofia",
-                    "country": "Bulgaria",
-                }
-            ]
-        }
+        return GEOCODE_SOFIA
 
     service = LocationService(json_getter=fake_json_getter)
 
@@ -184,16 +132,7 @@ def test_geocode_city_cache_disabled_when_ttl_is_zero():
     def fake_json_getter(url: str, **kwargs):
         nonlocal call_count
         call_count += 1
-        return {
-            "results": [
-                {
-                    "latitude": 42.6977,
-                    "longitude": 23.3219,
-                    "name": "Sofia",
-                    "country": "Bulgaria",
-                }
-            ]
-        }
+        return GEOCODE_SOFIA
 
     service = LocationService(json_getter=fake_json_getter, geo_cache_ttl_s=0)
 
@@ -204,7 +143,7 @@ def test_geocode_city_cache_disabled_when_ttl_is_zero():
 
 
 def test_geocode_city_raises_value_error_when_not_found():
-    service = LocationService(json_getter=lambda *args, **kwargs: {"results": []})
+    service = LocationService(json_getter=lambda *args, **kwargs: GEOCODE_EMPTY)
 
     with pytest.raises(ValueError, match="City not found"):
         service.geocode_city("Nowhere")
@@ -249,8 +188,8 @@ def test_geocode_city_converts_blank_country_to_none():
 # ---------------------------------------------------------------------------
 
 
-def test_get_json_success_uses_session_get():
-    session = FakeSession([FakeResponse({"ok": True})])
+def test_get_json_success_uses_session_get(fake_session_factory, fake_response):
+    session = fake_session_factory(fake_response({"ok": True}))
     service = LocationService(session=session)
 
     data = service._get_json("https://example.test/search", params={"name": "Sofia"}, timeout=3)
@@ -261,30 +200,28 @@ def test_get_json_success_uses_session_get():
     assert session.calls[0]["timeout"] == 3
 
 
-def test_get_json_invalid_json_raises_provider_error():
-    session = FakeSession([FakeResponse(json_error=ValueError("bad json"))])
+def test_get_json_invalid_json_raises_provider_error(fake_session_factory, fake_response):
+    session = fake_session_factory(fake_response(json_error=ValueError("bad json")))
     service = LocationService(session=session)
 
     with pytest.raises(ProviderError, match="invalid JSON"):
         service._get_json("https://example.test/search")
 
 
-def test_get_json_http_404_raises_provider_error():
-    session = FakeSession([FakeResponse({}, status_code=404)])
+def test_get_json_http_404_raises_provider_error(fake_session_factory, fake_response):
+    session = fake_session_factory(fake_response({}, status_code=404))
     service = LocationService(session=session)
 
     with pytest.raises(ProviderError, match="HTTP 404"):
         service._get_json("https://example.test/search")
 
 
-def test_get_json_retries_429_then_succeeds(monkeypatch):
+def test_get_json_retries_429_then_succeeds(monkeypatch, fake_session_factory, fake_response):
     monkeypatch.setattr("weather_app.services.location.time.sleep", lambda seconds: None)
 
-    session = FakeSession(
-        [
-            FakeResponse({}, status_code=429),
-            FakeResponse({"ok": True}, status_code=200),
-        ]
+    session = fake_session_factory(
+        fake_response({}, status_code=429),
+        fake_response({"ok": True}, status_code=200),
     )
     service = LocationService(session=session)
 
@@ -292,15 +229,13 @@ def test_get_json_retries_429_then_succeeds(monkeypatch):
     assert len(session.calls) == 2
 
 
-def test_get_json_retries_5xx_then_raises_network_error(monkeypatch):
+def test_get_json_retries_5xx_then_raises_network_error(monkeypatch, fake_session_factory, fake_response):
     monkeypatch.setattr("weather_app.services.location.time.sleep", lambda seconds: None)
 
-    session = FakeSession(
-        [
-            FakeResponse({}, status_code=500),
-            FakeResponse({}, status_code=502),
-            FakeResponse({}, status_code=503),
-        ]
+    session = fake_session_factory(
+        fake_response({}, status_code=500),
+        fake_response({}, status_code=502),
+        fake_response({}, status_code=503),
     )
     service = LocationService(session=session)
 
@@ -310,15 +245,13 @@ def test_get_json_retries_5xx_then_raises_network_error(monkeypatch):
     assert len(session.calls) == 3
 
 
-def test_get_json_timeout_raises_network_error_after_retries(monkeypatch):
+def test_get_json_timeout_raises_network_error_after_retries(monkeypatch, fake_session_factory):
     monkeypatch.setattr("weather_app.services.location.time.sleep", lambda seconds: None)
 
-    session = FakeSession(
-        [
-            requests.exceptions.Timeout("slow"),
-            requests.exceptions.Timeout("slow"),
-            requests.exceptions.Timeout("slow"),
-        ]
+    session = fake_session_factory(
+        requests.exceptions.Timeout("slow"),
+        requests.exceptions.Timeout("slow"),
+        requests.exceptions.Timeout("slow"),
     )
     service = LocationService(session=session)
 
@@ -328,15 +261,13 @@ def test_get_json_timeout_raises_network_error_after_retries(monkeypatch):
     assert len(session.calls) == 3
 
 
-def test_get_json_request_exception_raises_network_error_after_retries(monkeypatch):
+def test_get_json_request_exception_raises_network_error_after_retries(monkeypatch, fake_session_factory):
     monkeypatch.setattr("weather_app.services.location.time.sleep", lambda seconds: None)
 
-    session = FakeSession(
-        [
-            requests.exceptions.ConnectionError("down"),
-            requests.exceptions.ConnectionError("down"),
-            requests.exceptions.ConnectionError("down"),
-        ]
+    session = fake_session_factory(
+        requests.exceptions.ConnectionError("down"),
+        requests.exceptions.ConnectionError("down"),
+        requests.exceptions.ConnectionError("down"),
     )
     service = LocationService(session=session)
 
@@ -346,16 +277,14 @@ def test_get_json_request_exception_raises_network_error_after_retries(monkeypat
     assert len(session.calls) == 3
 
 
-def test_get_json_caps_attempts_to_three(monkeypatch):
+def test_get_json_caps_attempts_to_three(monkeypatch, fake_session_factory, fake_response):
     monkeypatch.setattr("weather_app.services.location.time.sleep", lambda seconds: None)
 
-    session = FakeSession(
-        [
-            FakeResponse({}, status_code=500),
-            FakeResponse({}, status_code=500),
-            FakeResponse({}, status_code=500),
-            FakeResponse({"should_not": "be_used"}, status_code=200),
-        ]
+    session = fake_session_factory(
+        fake_response({}, status_code=500),
+        fake_response({}, status_code=500),
+        fake_response({}, status_code=500),
+        fake_response({"should_not": "be_used"}, status_code=200),
     )
     service = LocationService(session=session)
 

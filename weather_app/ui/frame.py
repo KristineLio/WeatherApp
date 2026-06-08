@@ -7,14 +7,15 @@ import threading
 import wx
 import wx.lib.scrolledpanel as scrolled
 
-from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast, HourlySeries
+from dataclasses import replace
+
+from weather_app.domain.models import WeatherData, CurrentSnapshot, DailyForecast
 from weather_app.domain.modes import HourlyMode, DEFAULT_MODE, get_mode_meta
 from weather_app.services.errors import NetworkError, ProviderError
 from weather_app.services.settings_store import SettingsStore
 from weather_app.services.storage import StorageRepo
-from weather_app.ui.request_state import RequestState
 from weather_app.ui.cache_refresh_manager import CacheRefreshManager
-from weather_app.ui.weather_controller import WeatherController
+from weather_app.ui.request_state import RequestState
 from weather_app.ui.current_weather_panel import CurrentWeatherPanel
 from weather_app.ui.current_weather_presenter import build_current_weather_view_data
 from weather_app.ui.hour_tile import HourTile
@@ -23,6 +24,7 @@ from weather_app.ui.settings_dialog import SettingsDialog
 from weather_app.ui.theme import get_palette, pick_card_bg
 from weather_app.ui.weather_card import WeatherCard
 from weather_app.ui.weather_card_presenter import build_forecast_card_view_data
+from weather_app.ui.weather_controller import WeatherController
 from weather_app.utils.paths import PNG_DIR
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,7 @@ VISIBLE_HOURLY_MODES = (
     HourlyMode.HUMIDITY,
 )
 
+_MAX_UI_AUTO_RETRIES = 1
 
 
 class WeatherApp(wx.Frame):
@@ -54,9 +57,9 @@ class WeatherApp(wx.Frame):
             storage=self.storage,
             settings_store=self.settings_store,
         )
-        self.cache_refresh = CacheRefreshManager()
-        # Keep this alias so startup detection code stays simple.
-        self.service = self.cache_refresh.service
+        self.cache_refresh = CacheRefreshManager(
+            max_auto_retries=_MAX_UI_AUTO_RETRIES,
+        )
         
         self.forecast_cards: list[WeatherCard] = []
         self.hour_tiles: list[HourTile] = []
@@ -125,7 +128,7 @@ class WeatherApp(wx.Frame):
 
         wx.CallAfter(apply_initial)
 
-        detected = self.service.detect_city()
+        detected = self.cache_refresh.service.detect_city()
         if not detected:
             return
 
@@ -308,6 +311,10 @@ class WeatherApp(wx.Frame):
             self._set_star_state(False)
 
     def _toggle_favorite_for_current(self) -> None:
+        city = self._current_city_for_star()
+        if not city:
+            return
+
         try:
             self.controller.toggle_favorite(
                 data=self.data,
@@ -317,11 +324,11 @@ class WeatherApp(wx.Frame):
             self._refresh_star_state()
 
     def _load_city_from_settings(self, city: str) -> None:
-        city = self.controller.apply_loaded_city(self.settings, city)
-        if not city:
+        loaded_city = self.controller.apply_loaded_city(self.settings, city)
+        if not loaded_city:
             return
 
-        self.location.SetValue(city)
+        self.location.SetValue(loaded_city)
         self._on_get_weather(mark_user=False)
 
     def _apply_settings_from_dialog(self, new_settings) -> None:
@@ -347,19 +354,22 @@ class WeatherApp(wx.Frame):
             return
 
         if plan.forecast_changed and self.data:
-            new_selected = self.controller.selected_date_after_forecast_change(
+            self.selected_date = self.controller.selected_date_after_forecast_change(
                 data=self.data,
                 selected_date=self.selected_date,
                 forecast_days=self.settings.forecast_days,
             )
-            if new_selected != self.selected_date:
-                self.selected_date = new_selected
+
+            if self.selected_date == self.data.current.date_iso:
                 self._update_current_block(self.data)
 
             self._rebuild_forecast_cards(self.data.daily)
             self._refresh_hourly_strip()
 
-            if self.settings.forecast_days > plan.old_forecast_days and self.location.GetValue().strip():
+            if (
+                self.settings.forecast_days > plan.old_forecast_days
+                and self.location.GetValue().strip()
+            ):
                 self._on_get_weather(mark_user=False)
                 return
 
@@ -444,6 +454,9 @@ class WeatherApp(wx.Frame):
 
         self.Layout()
         self.Refresh()
+
+    def set_retry_callback(self, callback) -> None:
+        self.retry_btn.Bind(wx.EVT_BUTTON, lambda event: callback())
 
     def _build_current_panel(self, parent: wx.Window) -> wx.Panel:
         self.current_panel = CurrentWeatherPanel(
@@ -591,15 +604,6 @@ class WeatherApp(wx.Frame):
         except Exception:
             pass
 
-    def _weather_cache_key(self, city: str) -> tuple[str, str, int]:
-        return self.cache_refresh.weather_cache_key(city, self.settings)
-
-    def _get_cached_weather(self, city: str) -> WeatherData | None:
-        return self.cache_refresh.get_cached_weather(city, self.settings)
-
-    def _store_cached_weather(self, city: str, data: WeatherData) -> None:
-        self.cache_refresh.store_cached_weather(city, data, self.settings)
-
     def _on_get_weather(self, event=None, *, mark_user: bool = True, force: bool = False):
         self._hide_reconnect_status()
 
@@ -626,12 +630,18 @@ class WeatherApp(wx.Frame):
         self.settings_store.save(self.settings)
 
         req_id = self._next_request_id()
+        request_settings = replace(self.settings)
 
         # Cache-then-refresh:
-        # 1) If the frame has cached data, render it immediately.
-        # 2) Still start a background refresh using refresh_service, whose weather
-        #    cache is disabled, so it really contacts the provider.
-        cached = None if force else self._get_cached_weather(city)
+        # 1) If the manager has cached data, render it immediately.
+        # 2) Still start a background refresh through its refresh service, whose
+        #    weather cache is disabled, so it really contacts the provider.
+        lookup = self.cache_refresh.lookup_for_search(
+            city=city,
+            settings=request_settings,
+            force=force,
+        )
+        cached = lookup.cached
         if cached is not None:
             logger.info("UI cache HIT city=%r", city)
             self.update_ui(cached, write_history=False)
@@ -639,7 +649,7 @@ class WeatherApp(wx.Frame):
             logger.debug("UI cache MISS city=%r", city)
             self._set_current_loading(True, city=city)
 
-        def work(local_city: str, local_req_id: int, had_cache: bool):
+        def work(local_city: str, local_req_id: int, had_cache: bool, local_settings):
             retry_scheduled = False
             logger.info(
                 "Worker refresh start req_id=%s city=%r had_cache=%s",
@@ -648,12 +658,16 @@ class WeatherApp(wx.Frame):
                 had_cache,
             )
             try:
-                data = self.cache_refresh.fetch_fresh(local_city, self.settings)
+                data = self.cache_refresh.fetch_fresh(local_city, local_settings)
                 logger.info("Worker refresh success req_id=%s city=%r", local_req_id, local_city)
 
                 def apply_success() -> None:
                     self._hide_reconnect_status()
-                    self._store_cached_weather(local_city, data)
+                    self.cache_refresh.store_cached_weather(
+                        local_city,
+                        data,
+                        local_settings,
+                    )
                     self.update_ui(data, write_history=True)
                     self._set_current_loading(False)
 
@@ -721,7 +735,11 @@ class WeatherApp(wx.Frame):
                 if not retry_scheduled and not had_cache:
                     self._call_after_if_latest(local_req_id, self._set_current_loading, False)
 
-        threading.Thread(target=work, args=(city, req_id, cached is not None), daemon=True).start()
+        threading.Thread(
+            target=work,
+            args=(city, req_id, cached is not None, request_settings),
+            daemon=True,
+        ).start()
 
     def show_error(self, msg: str, *, show_retry: bool = False):
         self._hide_reconnect_status()

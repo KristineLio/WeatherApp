@@ -1,54 +1,16 @@
 import pytest
 import requests
 
-from weather_app.domain.settings import Units
 from weather_app.domain.models import WeatherData
+from weather_app.domain.settings import Units
 from weather_app.services.errors import NetworkError, ProviderError
-from weather_app.services.openmeteo import WeatherService, FORECAST_URL
+from weather_app.services.openmeteo import FORECAST_URL, WeatherService
 
-
-GEOCODE_SOFIA = {
-    "results": [
-        {
-            "name": "Sofia",
-            "latitude": 42.6977,
-            "longitude": 23.3219,
-            "country": "Bulgaria",
-        }
-    ]
-}
-
-GEOCODE_EMPTY = {"results": []}
-
-FORECAST_SOFIA = {
-    "current_weather": {
-        "time": "2026-06-07T09:30",
-        "temperature": 22.4,
-        "weathercode": 1,
-        "windspeed": 8.0,
-    },
-    "daily": {
-        "time": ["2026-06-07", "2026-06-08"],
-        "temperature_2m_max": [25.2, 27.1],
-        "temperature_2m_min": [16.0, 17.5],
-        "weathercode": [1, 3],
-        "sunrise": ["2026-06-07T05:50", "2026-06-08T05:50"],
-        "sunset": ["2026-06-07T20:55", "2026-06-08T20:56"],
-    },
-    "hourly": {
-        "time": [
-            "2026-06-07T08:00",
-            "2026-06-07T09:00",
-            "2026-06-07T10:00",
-        ],
-        "temperature_2m": [20.0, 22.0, 24.0],
-        "weathercode": [0, 1, 2],
-        "apparent_temperature": [19.0, 21.0, 23.0],
-        "relativehumidity_2m": [55, 58, 60],
-        "precipitation_probability": [0, 10, 20],
-        "windspeed": [5.0, 8.0, 10.0],
-    },
-}
+from tests.fixtures.weather_payloads import (
+    FORECAST_MISSING_CURRENT_TIME,
+    FORECAST_MISSING_DAILY_HOURLY_TIME,
+    FORECAST_SOFIA,
+)
 
 
 class FakeResponse:
@@ -86,7 +48,12 @@ class FakeSession:
 
 
 class FakeLocationService:
-    def __init__(self, *, geocode_result=(42.6977, 23.3219, "Sofia", "Bulgaria"), detected_city="Sofia"):
+    def __init__(
+        self,
+        *,
+        geocode_result=(42.6977, 23.3219, "Sofia", "Bulgaria"),
+        detected_city="Sofia",
+    ):
         self.geocode_result = geocode_result
         self.detected_city = detected_city
         self.normalize_calls = []
@@ -122,7 +89,7 @@ def make_service(responses, *, location_service=None, cache_ttl_s=120):
 def test_fetch_success_builds_weather_data():
     service = make_service([FakeResponse(payload=FORECAST_SOFIA)])
 
-    data = service.fetch("Sofia", units=Units.METRIC, forecast_days=2)
+    data = service.fetch("Sofia", units=Units.METRIC, forecast_days=3)
 
     assert isinstance(data, WeatherData)
     assert data.current.city == "Sofia, Bulgaria"
@@ -137,7 +104,7 @@ def test_fetch_success_builds_weather_data():
     assert data.current.precip == 10
     assert data.current.wind == 8.0
 
-    assert len(data.daily) == 2
+    assert len(data.daily) == 3
     assert data.daily[0].date_iso == "2026-06-07"
     assert data.daily[0].weekday == "Sun"
 
@@ -185,22 +152,14 @@ def test_fetch_imperial_adds_unit_params_to_forecast_request():
 
 
 def test_fetch_missing_current_time_raises_provider_error():
-    bad_forecast = {
-        **FORECAST_SOFIA,
-        "current_weather": {"temperature": 22.4, "weathercode": 1},
-    }
-    service = make_service([FakeResponse(payload=bad_forecast)])
+    service = make_service([FakeResponse(payload=FORECAST_MISSING_CURRENT_TIME)])
 
     with pytest.raises(ProviderError, match="missing current time"):
         service.fetch("Sofia")
 
 
 def test_fetch_missing_daily_time_raises_provider_error():
-    bad_forecast = {
-        **FORECAST_SOFIA,
-        "daily": {"temperature_2m_max": [25.2]},
-    }
-    service = make_service([FakeResponse(payload=bad_forecast)])
+    service = make_service([FakeResponse(payload=FORECAST_MISSING_DAILY_HOURLY_TIME)])
 
     with pytest.raises(ProviderError, match="missing daily/hourly time arrays"):
         service.fetch("Sofia")

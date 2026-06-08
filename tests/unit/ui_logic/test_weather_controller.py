@@ -219,3 +219,28 @@ def test_make_current_for_missing_day_returns_none(tmp_path):
     data = make_weather()
 
     assert controller.make_current_for_date(data=data, date_iso="2026-06-20") is None
+
+def test_build_hourly_for_date_without_data_returns_empty_payload(tmp_path):
+    controller, _, _ = make_controller(tmp_path)
+
+    hourly = controller.build_hourly_for_date(
+        data=None,
+        date_iso="2026-06-07",
+        mode=HourlyMode.TEMPERATURE,
+    )
+
+    assert hourly == {
+        "labels": [],
+        "hours_int": [],
+        "values": [],
+        "codes": [],
+        "time_isos": [],
+        "nights": [],
+        "pivot_index": None,
+    }
+
+
+def test_make_current_for_date_without_data_returns_none(tmp_path):
+    controller, _, _ = make_controller(tmp_path)
+
+    assert controller.make_current_for_date(data=None, date_iso="2026-06-07") is None

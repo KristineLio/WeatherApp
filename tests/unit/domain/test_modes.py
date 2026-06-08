@@ -41,3 +41,10 @@ def test_threshold_icons_for_metric_modes():
     assert icon_for(HourlyMode.PRECIPITATION, 20, None) == "precip_med.png"
     assert icon_for(HourlyMode.WIND, 9, None) == "wind_calm.png"
     assert icon_for(HourlyMode.HUMIDITY, 80, None) == "hum_muggy.png"
+
+def test_feels_like_mode_formats_like_temperature_and_uses_weather_icon():
+    assert format_value(HourlyMode.FEELS_LIKE, 21.6, Units.METRIC) == "22°C"
+    assert format_value(HourlyMode.FEELS_LIKE, 70.2, Units.IMPERIAL) == "70°F"
+    assert get_mode_meta(HourlyMode.FEELS_LIKE).tab_label == "Feels like"
+    assert icon_for(HourlyMode.FEELS_LIKE, 21.6, 1) == "partly.png"
+    assert icon_for(HourlyMode.FEELS_LIKE, 21.6, None) == "unknown.png"

@@ -71,3 +71,14 @@ def test_current_weather_view_data_detects_night(sample_weather_data):
     )
 
     assert view.is_night is True
+
+def test_current_weather_view_data_formats_imperial_units(sample_weather_data):
+    view = build_current_weather_view_data(
+        data=sample_weather_data,
+        units=Units.IMPERIAL,
+        now_dt=dt.datetime(2026, 6, 7, 12, 34),
+    )
+
+    assert view.temp_text == "22°F"
+    assert view.feels_text == "Feels like: 21°F"
+    assert view.wind_text == "Wind: 8 mph"
