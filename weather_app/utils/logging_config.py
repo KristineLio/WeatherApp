@@ -15,7 +15,7 @@ def setup_logging() -> None:
     level_name = os.getenv("WEATHER_APP_LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
 
-    #Avoid duplicate handlers if setup_logging() is ever called twice. do nothing
+    # Avoid duplicate handlers if setup_logging() is called more than once.
     root = logging.getLogger()
     if root.handlers:
         root.setLevel(level)

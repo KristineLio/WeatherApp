@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import  Any
+from typing import Any
 from weather_app.domain.modes import HourlyMode, get_mode_meta
 from weather_app.utils.formatters import format_hour_label
 

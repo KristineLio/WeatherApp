@@ -3,7 +3,6 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 import datetime as dt
 
 _RECENT_DUPLICATE_SECONDS = 60

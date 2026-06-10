@@ -7,6 +7,7 @@ from weather_app.services.storage import StorageRepo
 from weather_app.ui.theme import get_palette
 from weather_app.utils.formatters import format_d_m_hhmm
 
+VISIBLE_HISTORY_ROWS = 20
 
 class ExpandRow(wx.Panel):
     def __init__(
@@ -297,7 +298,7 @@ class HistoryPanel(_BaseSavedPanel):
         self.Bind(wx.EVT_CHAR_HOOK, self._on_char_hook)
 
     def refresh_data(self) -> None:
-        self._rows = self.repo.list_history(limit=20)
+        self._rows = self.repo.list_history(limit=VISIBLE_HISTORY_ROWS)
         self.list_ctrl.DeleteAllItems()
 
         for i, row in enumerate(self._rows):
