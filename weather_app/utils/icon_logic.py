@@ -74,7 +74,7 @@ def night_variant(filename: str, *, night: bool, kind: str = "png") -> str:
     return filename
 
 def code_to_label_icon(code: int, *, night: bool = False) -> tuple[str, str]:
-    label, icon = WEATHERCODE_MAP.get(int(code), ("Weather", "unknown.png"))
+    label, icon = WEATHERCODE_MAP.get(int(code), ("Unknown weather", "unknown.png"))
     return label, night_variant(icon, night=night, kind="png")
 
 def pick_icon_by_threshold(value: Value, table: IconTable, fallback: str = "unknown.png") -> str:

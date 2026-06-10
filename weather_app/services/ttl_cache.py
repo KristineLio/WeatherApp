@@ -10,12 +10,6 @@ V = TypeVar("V")
 
 
 class TTLCache(Generic[K, V]):
-    """ Simple in-memory cache with TTL. """
-    """
-        “Cache-then-refresh”
-        If cached data exists and is recent → show it immediately
-        In background → still fetch fresh data and update UI when done
-    """
     """
     Tiny thread-safe in-memory TTL cache.
 
@@ -23,8 +17,7 @@ class TTLCache(Generic[K, V]):
         key -> (timestamp, value)
 
     Notes:
-    - ttl_s <= 0 means "disabled" from a practical point of view:
-      get() will treat items as expired immediately.
+    - ttl_s <= 0 means get() treats items as expired immediately.
     - Expired entries are removed lazily on read.
     """
 

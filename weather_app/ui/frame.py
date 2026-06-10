@@ -49,7 +49,7 @@ class WeatherApp(wx.Frame):
         self.settings_dialog: SettingsDialog | None = None
 
         self.storage = StorageRepo()
-        logger.info("DB path: %s", self.storage.db_path)
+        logger.debug("DB path: %s", self.storage.db_path)
 
         self._user_started_searching = False
 

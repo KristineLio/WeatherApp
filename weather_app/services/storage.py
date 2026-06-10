@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Iterable
 import datetime as dt
 
+_RECENT_DUPLICATE_SECONDS = 60
+_MAX_HISTORY_ROWS = 200
 
 def default_db_path() -> Path:
     """
@@ -87,7 +89,6 @@ class StorageRepo:
                 """
             )
             con.execute("CREATE INDEX IF NOT EXISTS idx_history_id ON search_history(id DESC)")
-            #con.execute("CREATE INDEX IF NOT EXISTS idx_history_searched_at ON search_history(searched_at DESC)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_history_city ON search_history(city)")
 
     # -------------------------
@@ -158,13 +159,64 @@ class StorageRepo:
         city = (city or "").strip()
         if not city:
             return
+
+        now = self._now_iso()
+
         with self._connect() as con:
+            latest = con.execute(
+                """
+                SELECT id, city, searched_at
+                FROM search_history
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+
+            should_replace_latest = False
+
+            if latest is not None:
+                latest_city = (latest["city"] or "").strip().lower()
+                current_city = city.lower()
+
+                if latest_city == current_city:
+                    try:
+                        latest_time = dt.datetime.fromisoformat(latest["searched_at"])
+                        now_time = dt.datetime.fromisoformat(now)
+                        age_seconds = (now_time - latest_time).total_seconds()
+
+                        should_replace_latest = age_seconds <= _RECENT_DUPLICATE_SECONDS
+                    except ValueError:
+                        should_replace_latest = False
+
+            if should_replace_latest:
+                con.execute(
+                    """
+                    UPDATE search_history
+                    SET city = ?, lat = ?, lon = ?, searched_at = ?
+                    WHERE id = ?
+                    """,
+                    (city, lat, lon, now, int(latest["id"])),
+                )
+            else:
+                con.execute(
+                    """
+                    INSERT INTO search_history(city, lat, lon, searched_at)
+                    VALUES(?, ?, ?, ?)
+                    """,
+                    (city, lat, lon, now),
+                )
+
             con.execute(
                 """
-                INSERT INTO search_history(city, lat, lon, searched_at)
-                VALUES(?, ?, ?, ?)
+                DELETE FROM search_history
+                WHERE id NOT IN (
+                    SELECT id
+                    FROM search_history
+                    ORDER BY id DESC
+                    LIMIT ?
+                )
                 """,
-                (city, lat, lon, self._now_iso()),
+                (_MAX_HISTORY_ROWS,),
             )
 
     def list_history(self, *, limit: int = 20) -> list[HistoryRow]:

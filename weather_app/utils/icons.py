@@ -73,6 +73,8 @@ def get_anim(filename: str) -> wx.adv.Animation:
         return anim
 
     anim = wx.adv.Animation(full_path)
+    if not anim.IsOk() and filename != "unknown.gif":
+        anim = wx.adv.Animation(_gif_path("unknown.gif"))
     _ANIM_CACHE[full_path] = anim
     return anim
 

@@ -67,8 +67,8 @@ class Settings:
         except (TypeError, ValueError):
             forecast_days = 7
 
-        # clamp to allowed range 1–14
-        forecast_days = max(1, min(14, forecast_days))
+        # clamp to allowed range 3–14
+        forecast_days = max(3, min(14, forecast_days))
 
         return cls(
             default_city=default_city,
