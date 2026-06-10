@@ -5,7 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "weather-app"
 version = "0.1.0"
+description = "A desktop weather app built with Python, wxPython, Open-Meteo, and SQLite."
+readme = "README.md"
 requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Christina Lioliosidou" }
+]
+dependencies = [
+    "requests>=2.31",
+    "wxPython>=4.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
 
 [tool.setuptools]
 packages = ["weather_app"]
+
+[tool.setuptools.package-data]
+weather_app = [
+    "assets/png/*",
+    "assets/gif/*",
+]

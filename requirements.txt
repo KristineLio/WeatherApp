@@ -1,0 +1,3 @@
+requests>=2.31
+wxPython>=4.2
+pytest>=8.0
